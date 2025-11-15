@@ -101,6 +101,11 @@ RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
 ENV PYTHONPATH=/usr/src/app/pydeps
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
+
+# 确保 Shell 能够找到可执行脚本 (mcpo, uvx 等)
+ENV PATH=/usr/src/app/pydeps/bin:$PATH
+
+
 # 设置时区：依赖于运行时传入的 TZ 环境变量（例如 docker-compose.yml 中的配置）。
 # 基础镜像 node:20-alpine 已安装 tzdata，运行时设置 TZ 即可生效。
 

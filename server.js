@@ -171,7 +171,7 @@ app.use((req, res, next) => {
         if (clientIp && clientIp.substr(0, 7) === "::ffff:") {
             clientIp = clientIp.substr(7);
         }
-        
+
         // 始终记录收到的POST请求IP
         console.log(`[IP Tracker] Received POST request from IP: ${clientIp}`);
 
@@ -255,12 +255,12 @@ const adminAuth = (req, res, next) => {
             console.error('[AdminAuth] AdminUsername or AdminPassword not set in config.env. Admin panel is disabled.');
             // 对API和页面请求返回不同的错误格式
             if (req.path.startsWith('/admin_api') || (req.headers.accept && req.headers.accept.includes('application/json'))) {
-                 res.status(503).json({
+                res.status(503).json({
                     error: 'Service Unavailable: Admin credentials not configured.',
                     message: 'Please set AdminUsername and AdminPassword in the config.env file to enable the admin panel.'
                 });
             } else {
-                 res.status(503).send('<h1>503 Service Unavailable</h1><p>Admin credentials (AdminUsername, AdminPassword) are not configured in config.env. Please configure them to enable the admin panel.</p>');
+                res.status(503).send('<h1>503 Service Unavailable</h1><p>Admin credentials (AdminUsername, AdminPassword) are not configured in config.env. Please configure them to enable the admin panel.</p>');
             }
             return; // 停止进一步处理
         }
@@ -301,7 +301,7 @@ const adminAuth = (req, res, next) => {
                     loginAttempts.set(clientIp, attemptInfo);
                 }
             }
-            
+
             res.setHeader('WWW-Authenticate', 'Basic realm="Admin Panel"');
             if (req.path.startsWith('/admin_api') || (req.headers.accept && req.headers.accept.includes('application/json'))) {
                 return res.status(401).json({ error: 'Unauthorized' });
@@ -309,14 +309,14 @@ const adminAuth = (req, res, next) => {
                 return res.status(401).send('<h1>401 Unauthorized</h1><p>Authentication required to access the Admin Panel.</p>');
             }
         }
-        
+
         // 4. 认证成功
         if (clientIp) {
             loginAttempts.delete(clientIp); // 成功后清除尝试记录
         }
         return next();
     }
-    
+
     // 非管理面板路径，继续
     return next();
 };
@@ -384,7 +384,7 @@ app.get('/v1/models', async (req, res) => {
             const responseText = await apiResponse.text();
             try {
                 const modelsData = JSON.parse(responseText);
-                
+
                 // 替换模型列表中的内部模型名为公开模型名
                 if (modelsData.data && Array.isArray(modelsData.data)) {
                     modelsData.data = modelsData.data.map(model => {
@@ -400,7 +400,7 @@ app.get('/v1/models', async (req, res) => {
                         return model;
                     });
                 }
-                
+
                 // 设置响应头
                 res.status(apiResponse.status);
                 apiResponse.headers.forEach((value, name) => {
@@ -408,7 +408,7 @@ app.get('/v1/models', async (req, res) => {
                         res.setHeader(name, value);
                     }
                 });
-                
+
                 // 发送修改后的响应
                 res.json(modelsData);
                 return;
@@ -423,7 +423,7 @@ app.get('/v1/models', async (req, res) => {
         apiResponse.headers.forEach((value, name) => {
             // Avoid forwarding hop-by-hop headers
             if (!['content-encoding', 'transfer-encoding', 'connection', 'content-length', 'keep-alive'].includes(name.toLowerCase())) {
-                 res.setHeader(name, value);
+                res.setHeader(name, value);
             }
         });
 
@@ -433,10 +433,10 @@ app.get('/v1/models', async (req, res) => {
     } catch (error) {
         console.error('转发 /v1/models 请求时出错:', error.message, error.stack);
         if (!res.headersSent) {
-             res.status(500).json({ error: 'Internal Server Error', details: error.message });
+            res.status(500).json({ error: 'Internal Server Error', details: error.message });
         } else if (!res.writableEnded) {
-             console.error('[STREAM ERROR] Headers already sent. Cannot send JSON error. Ending stream if not already ended.');
-             res.end();
+            console.error('[STREAM ERROR] Headers already sent. Cannot send JSON error. Ending stream if not already ended.');
+            res.end();
         }
     }
 });
@@ -470,9 +470,9 @@ app.post('/v1/schedule_task', async (req, res) => {
     try {
         // 确保目录存在
         await fs.mkdir(VCP_TIMED_CONTACTS_DIR, { recursive: true });
-        
+
         const taskFilePath = path.join(VCP_TIMED_CONTACTS_DIR, `${task_id}.json`);
-        
+
         const scheduledTimeWithOffset = formatToLocalDateTimeWithOffset(targetDate);
 
         const taskData = {
@@ -484,9 +484,9 @@ app.post('/v1/schedule_task', async (req, res) => {
 
         await fs.writeFile(taskFilePath, JSON.stringify(taskData, null, 2));
         if (DEBUG_MODE) console.log(`[Server] 已通过API创建新的定时任务文件: ${taskFilePath}`);
-        
+
         // 返回成功的响应，插件可以基于此生成最终的用户回执
-        res.status(200).json({ 
+        res.status(200).json({
             status: "success",
             message: "任务已成功调度。",
             details: {
@@ -681,7 +681,7 @@ app.post('/v1/human/tool', async (req, res) => {
     } catch (error) {
         console.error('[Human Tool Exec] Error processing direct tool call:', error.message);
         handleApiError(req); // 新增：处理API错误计数
-        
+
         let errorObject;
         try {
             // processToolCall 抛出的错误是一个字符串化的JSON
@@ -689,12 +689,12 @@ app.post('/v1/human/tool', async (req, res) => {
         } catch (parseError) {
             errorObject = { error: 'Internal Server Error', details: error.message };
         }
-        
+
         res.status(500).json(errorObject);
     }
 });
 
-
+//解析出AI回复中的日记内容，并调用DailyNoteWrite插件保存 尤其是maidName
 async function handleDiaryFromAIResponse(responseText) {
     let fullAiResponseTextForDiary = '';
     let successfullyParsedForDiary = false;
@@ -721,9 +721,9 @@ async function handleDiaryFromAIResponse(responseText) {
             successfullyParsedForDiary = true;
         }
     }
-    if (!successfullyParsedForDiary) { 
+    if (!successfullyParsedForDiary) {
         try {
-            const parsedJson = JSON.parse(responseText); 
+            const parsedJson = JSON.parse(responseText);
             const jsonContent = parsedJson.choices?.[0]?.message?.content;
             if (jsonContent && typeof jsonContent === 'string') {
                 fullAiResponseTextForDiary = jsonContent;
@@ -731,7 +731,7 @@ async function handleDiaryFromAIResponse(responseText) {
             }
         } catch (e) { /* ignore */ }
     }
-    if (!successfullyParsedForDiary && !looksLikeSSEForDiary) { 
+    if (!successfullyParsedForDiary && !looksLikeSSEForDiary) {
         fullAiResponseTextForDiary = responseText;
     }
 
@@ -741,7 +741,7 @@ async function handleDiaryFromAIResponse(responseText) {
         if (match && match[1]) {
             const noteBlockContent = match[1].trim();
             if (DEBUG_MODE) console.log('[handleDiaryFromAIResponse] Found structured daily note block.');
-
+            //me 捕获maidName
             const maidMatch = noteBlockContent.match(/^\s*Maid:\s*(.+?)$/m);
             const dateMatch = noteBlockContent.match(/^\s*Date:\s*(.+?)$/m);
 
@@ -771,7 +771,7 @@ async function handleDiaryFromAIResponse(responseText) {
                         const dailyNoteWriteResponse = pluginResult; // Use pluginResult directly
 
                         if (DEBUG_MODE) console.log(`[handleDiaryFromAIResponse] DailyNoteWrite plugin reported success: ${dailyNoteWriteResponse.message}`);
-                        
+
                         let filePath = '';
                         const successMessage = dailyNoteWriteResponse.message; // e.g., "Diary saved to /path/to/file.txt"
                         const pathMatchMsg = /Diary saved to (.*)/;
@@ -805,7 +805,7 @@ async function handleDiaryFromAIResponse(responseText) {
                     console.error('[handleDiaryFromAIResponse] Error executing DailyNoteWrite plugin:', pluginError.message, pluginError.stack);
                 }
             } else {
-                console.error('[handleDiaryFromAIResponse] Could not extract Maid, Date, or Content from daily note block:', { maidName, dateString, contentText: contentText?.substring(0,50) });
+                console.error('[handleDiaryFromAIResponse] Could not extract Maid, Date, or Content from daily note block:', { maidName, dateString, contentText: contentText?.substring(0, 50) });
             }
         }
     }
@@ -900,13 +900,13 @@ async function initialize() {
     console.log('开始加载插件...');
     await pluginManager.loadPlugins();
     console.log('插件加载完成。');
-    
+
     console.log('开始初始化服务类插件...');
     // --- 关键顺序调整 ---
     // 必须先将 WebSocketServer 实例注入到 PluginManager，
     // 这样在 initializeServices 内部才能正确地为 VCPLog 等插件注入广播函数。
     pluginManager.setWebSocketServer(webSocketServer);
-    
+
     await pluginManager.initializeServices(app, adminPanelRoutes, __dirname);
     // 在所有服务插件都注册完路由后，再将 adminApiRouter 挂载到主 app 上
     app.use('/admin_api', adminPanelRoutes);
@@ -922,7 +922,7 @@ async function initialize() {
             vcpLogFunctions: pluginManager.getVCPLogFunctions()
         };
         if (DEBUG_MODE) console.log('[Server] Injecting dependencies into plugins...');
-        
+
         // 注入到消息预处理器
         for (const [name, module] of pluginManager.messagePreprocessors) {
             if (typeof module.setDependencies === 'function') {
@@ -976,14 +976,14 @@ async function initialize() {
             if (DEBUG_MODE) console.log('[initialize] All available emoji lists loaded into cache.');
         }
     } catch (error) {
-         if (error.code === 'ENOENT') {
-             console.error(`[initialize] Error: Emoji list source directory not found: ${emojiListSourceDir}. Make sure the EmojiListGenerator plugin ran successfully.`); // Keep as error
-         } else {
+        if (error.code === 'ENOENT') {
+            console.error(`[initialize] Error: Emoji list source directory not found: ${emojiListSourceDir}. Make sure the EmojiListGenerator plugin ran successfully.`); // Keep as error
+        } else {
             console.error(`[initialize] Error reading emoji list source directory ${emojiListSourceDir}:`, error.message); // Keep as error
-         }
+        }
     }
     if (DEBUG_MODE) console.log('表情包列表缓存加载完成。');
-    
+
     // 初始化通用任务调度器
     taskScheduler.initialize(pluginManager, webSocketServer, DEBUG_MODE);
 }
@@ -995,16 +995,16 @@ server = app.listen(port, async () => { // Assign to server variable
     await loadBlacklist(); // 新增：在服务器启动时加载IP黑名单
     console.log(`中间层服务器正在监听端口 ${port}`);
     console.log(`API 服务器地址: ${apiUrl}`);
-    
+
     // 新增：加载模型重定向配置
     console.log('正在加载模型重定向配置...');
     modelRedirectHandler.setDebugMode(DEBUG_MODE);
     await modelRedirectHandler.loadModelRedirectConfig(path.join(__dirname, 'ModelRedirect.json'));
     console.log('模型重定向配置加载完成。');
-    
+
     // ensureDebugLogDir() is effectively handled by initializeServerLogger() synchronously earlier.
     // If ensureDebugLogDirAsync was meant for other purposes, it can be called where needed.
-    
+
     // 新增：初始化Agent管理器
     console.log('正在初始化Agent管理器...');
     await agentManager.initialize(DEBUG_MODE);
@@ -1020,11 +1020,11 @@ server = app.listen(port, async () => { // Assign to server variable
     if (DEBUG_MODE) console.log('[Server] Initializing WebSocketServer...');
     const vcpKeyValue = pluginManager.getResolvedPluginConfigValue('VCPLog', 'VCP_Key') || process.env.VCP_Key;
     webSocketServer.initialize(server, { debugMode: DEBUG_MODE, vcpKey: vcpKeyValue });
-    
+
     // --- 注入依赖 ---
     // pluginManager.setWebSocketServer(webSocketServer); // 已移动到 initializeServices 之前
     webSocketServer.setPluginManager(pluginManager);
-    
+
     // 初始化 FileFetcherServer
     FileFetcherServer.initialize(webSocketServer);
 
@@ -1036,7 +1036,7 @@ server = app.listen(port, async () => { // Assign to server variable
 
 async function gracefulShutdown() {
     console.log('Initiating graceful shutdown...');
-    
+
     if (taskScheduler) {
         taskScheduler.shutdown();
     }

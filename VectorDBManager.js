@@ -37,12 +37,12 @@ class SearchCache {
     get(diaryName, queryVector, k) {
         const key = this.getCacheKey(diaryName, queryVector, k);
         const entry = this.cache.get(key);
-        
+
         if (entry && Date.now() - entry.timestamp < this.ttl) {
             this.hits++;
             return entry.result;
         }
-        
+
         this.cache.delete(key);
         this.misses++;
         return null;
@@ -50,12 +50,12 @@ class SearchCache {
 
     set(diaryName, queryVector, k, result) {
         const key = this.getCacheKey(diaryName, queryVector, k);
-        
+
         if (this.cache.size >= this.maxSize) {
             const firstKey = this.cache.keys().next().value;
             this.cache.delete(firstKey);
         }
-        
+
         this.cache.set(key, {
             result,
             timestamp: Date.now()
@@ -104,18 +104,22 @@ class VectorDBManager {
         this.searchCache = new SearchCache(this.config.cacheSize, this.config.cacheTTL);
         this.searchWorkerPool = new WorkerPool(path.resolve(__dirname, 'vectorSearchWorker.js'));
         this.fileLocks = new Map();
-        
+
         // ✅ SQLite存储层
         this.storage = new VectorDBStorage(VECTOR_STORE_PATH);
-        
+
         // ✅ Tag向量管理器
         this.tagVectorManager = null;
         this.tagVectorEnabled = false;
+<<<<<<< HEAD
         
         // 🌟 Tag扩展器（毛边网络）
         this.tagExpander = null;
         this.tagExpanderEnabled = false;
         
+=======
+
+>>>>>>> 0b10395 (我的第一次提交VCPtoolbox)
         // ✅ 批量写入优化
         this.usageStatsBuffer = new Map();
         this.usageStatsFlushTimer = null;
@@ -153,7 +157,7 @@ class VectorDBManager {
         const lockKey = `lock_${diaryName}`;
         let attempts = 0;
         const maxAttempts = 100; // 5秒超时（100 * 50ms）
-        
+
         while (this.fileLocks.get(lockKey)) {
             if (attempts++ >= maxAttempts) {
                 const lock = this.fileLocks.get(lockKey);
@@ -166,12 +170,12 @@ class VectorDBManager {
             }
             await new Promise(resolve => setTimeout(resolve, 50));
         }
-        
+
         this.fileLocks.set(lockKey, {
             acquiredAt: Date.now(),
             stack: new Error().stack // ✅ 调试用：记录调用栈
         });
-        
+
         this.debugLog(`Lock acquired for "${diaryName}"`);
     }
 
@@ -182,7 +186,7 @@ class VectorDBManager {
     releaseLock(diaryName) {
         const lockKey = `lock_${diaryName}`;
         const lock = this.fileLocks.get(lockKey);
-        
+
         if (lock) {
             const heldDuration = Date.now() - lock.acquiredAt;
             this.fileLocks.delete(lockKey);
@@ -220,17 +224,21 @@ class VectorDBManager {
             dbStats: this.storage.getStats(),
             cacheStats: this.searchCache.getStats(),
         };
-        
+
         // ✅ 添加Tag向量统计
         if (this.tagVectorEnabled && this.tagVectorManager) {
             healthStatus.tagStats = this.tagVectorManager.getStats();
         }
+<<<<<<< HEAD
         
         // 🌟 添加Tag扩展器统计
         if (this.tagExpanderEnabled && this.tagExpander) {
             healthStatus.tagExpanderStats = this.tagExpander.getStats();
         }
         
+=======
+
+>>>>>>> 0b10395 (我的第一次提交VCPtoolbox)
         return healthStatus;
     }
 
@@ -238,14 +246,14 @@ class VectorDBManager {
         console.log('[VectorDB] Initializing Vector Database Manager...');
         await fs.mkdir(VECTOR_STORE_PATH, { recursive: true });
         await this.storage.initialize();
-        
+
         // ✅ 初始化Tag向量管理器（异步后台，不阻塞启动）
         this.initializeTagVectorManager(); // ⚠️ 不使用 await，让它在后台运行
-        
+
         await this.scanAndSyncAll();
         await this.cacheDiaryNameVectors();
         await this.preWarmIndices();
-        this.watchDiaries();
+        this.watchDiaries();//me 在这里监听日记文件夹的变化 关键步骤
         console.log('[VectorDB] Initialization complete. Now monitoring diary files for changes.');
     }
 
@@ -255,17 +263,17 @@ class VectorDBManager {
     async initializeTagVectorManager() {
         try {
             console.log('[VectorDB] Initializing Tag Vector Manager...');
-            
+
             this.tagVectorManager = new TagVectorManager({
                 diaryRootPath: DIARY_ROOT_PATH,
                 vectorStorePath: VECTOR_STORE_PATH
             });
-            
+
             // 传入embedding函数
             const embeddingFunction = async (texts) => {
                 return await this.getEmbeddingsWithRetry(texts);
             };
-            
+
             // ✅ 异步初始化：不阻塞服务器启动
             console.log('[VectorDB] Tag Vector Manager will build in background...');
             this.tagVectorManager.initialize(embeddingFunction).then(() => {
@@ -284,10 +292,10 @@ class VectorDBManager {
                 console.error('[VectorDB] Tag Vector Manager build failed:', error);
                 this.tagVectorEnabled = false;
             });
-            
+
             // 立即返回，不等待构建完成
             console.log('[VectorDB] Tag Vector Manager is building in background, server continues...');
-            
+
         } catch (error) {
             console.error('[VectorDB] Failed to start Tag Vector Manager:', error);
             console.warn('[VectorDB] Tag-based search will be disabled');
@@ -333,13 +341,13 @@ class VectorDBManager {
     async scanAndSyncAll() {
         console.log('[VectorDB] Scanning all diary books for updates...');
         const diaryBooks = await fs.readdir(DIARY_ROOT_PATH, { withFileTypes: true });
-        
+
         // ✅ 批量处理，避免并发问题
         const updateTasks = [];
-        
+
         // ✅ 新增：收集当前存在的日记本名称
         const currentDiaryNames = new Set();
-        
+
         for (const dirent of diaryBooks) {
             if (dirent.isDirectory()) {
                 const diaryName = dirent.name;
@@ -347,10 +355,10 @@ class VectorDBManager {
                     console.log(`[VectorDB] Ignoring folder "${diaryName}" as it is in the exclusion list.`);
                     continue;
                 }
-                
+
                 currentDiaryNames.add(diaryName);
                 const diaryPath = path.join(DIARY_ROOT_PATH, diaryName);
-                
+
                 const needsUpdate = await this.checkIfUpdateNeeded(diaryName, diaryPath);
                 if (needsUpdate) {
                     console.log(`[VectorDB] Changes detected in "${diaryName}", will schedule update.`);
@@ -360,7 +368,7 @@ class VectorDBManager {
                 }
             }
         }
-        
+
         // ✅ 新增：清理数据库中已删除的日记本
         const dbDiaryNames = this.storage.getAllDiaryNames();
         for (const dbDiaryName of dbDiaryNames) {
@@ -369,7 +377,7 @@ class VectorDBManager {
                 await this.cleanupDeletedDiary(dbDiaryName);
             }
         }
-        
+
         // ✅ 统一调度更新任务
         console.log(`[VectorDB] Scheduling ${updateTasks.length} diary books for update.`);
         for (const diaryName of updateTasks) {
@@ -387,17 +395,17 @@ class VectorDBManager {
         const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
         const indexPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}.bin`);
         const indexExists = await this.fileExists(indexPath);
-        
+
         // ✅ 步骤1：检查数据库是否有数据
         const chunkMap = this.storage.getChunkMap(diaryName);
         const dbChunkCount = Object.keys(chunkMap).length;
-        
+
         // ✅ 情况1：数据库为空 → Full Rebuild（第一次构建）
         if (dbChunkCount === 0) {
             console.log(`[VectorDB] Database empty for "${diaryName}" → Full Rebuild (first build)`);
             return true;
         }
-        
+
         // ✅ 步骤2：数据库有数据，检查索引文件
         if (!indexExists) {
             console.log(`[VectorDB] Index file missing for "${diaryName}" but database has ${dbChunkCount} chunks`);
@@ -413,7 +421,7 @@ class VectorDBManager {
             const tempIndex = new HierarchicalNSW('l2', dimensions);
             tempIndex.readIndexSync(indexPath);
             const indexElementCount = tempIndex.getCurrentCount();
-            
+
             if (Math.abs(indexElementCount - dbChunkCount) > 0) {
                 const diff = Math.abs(indexElementCount - dbChunkCount);
                 const diffRatio = dbChunkCount > 0 ? diff / dbChunkCount : 1.0;
@@ -483,20 +491,20 @@ class VectorDBManager {
             const filePath = path.join(diaryPath, file);
             const content = await fs.readFile(filePath, 'utf-8');
             const currentFileHash = crypto.createHash('md5').update(content).digest('hex');
-            
+
             if (oldFileHash !== currentFileHash) {
                 console.log(`[VectorDB] File changed: "${file}" in "${diaryName}"`);
                 return true;
             }
         }
-        
+
         this.debugLog(`[VectorDB] "${diaryName}" is up-to-date`);
         return false;
     }
 
     async calculateChanges(diaryName) {
         const diaryPath = path.join(DIARY_ROOT_PATH, diaryName);
-        
+
         // ✅ 再次检查（防御性编程）- 处理所有访问错误
         try {
             await fs.access(diaryPath);
@@ -515,9 +523,10 @@ class VectorDBManager {
             }
             throw error;
         }
-        
+
         const newFileHashes = {};
         const oldChunkMap = this.storage.getChunkMap(diaryName);
+<<<<<<< HEAD
         
         // ✅ 检查数据完整性：收集损坏条目对应的源文件
         // 让这些损坏文件进入正常的diff流程，由变化率判断是否触发重建
@@ -537,6 +546,14 @@ class VectorDBManager {
                     hasChunkHash: !!data?.chunkHash
                 });
             }
+=======
+
+        const oldChunkHashToLabel = new Map(Object.entries(oldChunkMap).map(([label, data]) => [data.chunkHash, Number(label)]));
+
+        // ✅ 修复：防御性检查, 防止 undefined key 导致 size 异常
+        if (oldChunkHashToLabel.has(undefined)) {
+            oldChunkHashToLabel.delete(undefined);
+>>>>>>> 0b10395 (我的第一次提交VCPtoolbox)
         }
         
         if (corruptedCount > 0) {
@@ -555,7 +572,7 @@ class VectorDBManager {
             const content = await fs.readFile(filePath, 'utf-8');
             newFileHashes[file] = crypto.createHash('md5').update(content).digest('hex');
             const chunks = chunkText(content);
-            
+
             const fileChunkList = [];
             for (let i = 0; i < chunks.length; i++) {
                 const chunk = chunks[i];
@@ -584,7 +601,7 @@ class VectorDBManager {
         // ✅ 检测需要删除的：旧文件不再存在，文件内容变化，或文件数据损坏
         for (const [file, oldLabels] of oldFileChunks.entries()) {
             const currentChunks = currentFileChunks.get(file);
-            
+
             if (!currentChunks) {
                 // 文件已删除，删除所有相关chunks
                 for (const label of oldLabels.keys()) {
@@ -594,6 +611,7 @@ class VectorDBManager {
                 // 文件存在，检查文件hash是否变化，或者该文件有损坏的数据
                 const oldFileHash = this.storage.getFileHashes(diaryName)[file];
                 const newFileHash = newFileHashes[file];
+<<<<<<< HEAD
                 const isCorrupted = corruptedSourceFiles.has(file);
                 
                 if (oldFileHash !== newFileHash || isCorrupted) {
@@ -601,6 +619,11 @@ class VectorDBManager {
                     if (isCorrupted) {
                         console.log(`[VectorDB] Rebuilding corrupted file "${file}" in "${diaryName}"`);
                     }
+=======
+
+                if (oldFileHash !== newFileHash) {
+                    // 文件内容变化，删除所有旧chunks（后面会重新添加）
+>>>>>>> 0b10395 (我的第一次提交VCPtoolbox)
                     for (const label of oldLabels.keys()) {
                         labelsToDelete.push(label);
                     }
@@ -612,10 +635,16 @@ class VectorDBManager {
         for (const [file, currentChunks] of currentFileChunks.entries()) {
             const oldFileHash = this.storage.getFileHashes(diaryName)[file];
             const newFileHash = newFileHashes[file];
+<<<<<<< HEAD
             const isCorrupted = corruptedSourceFiles.has(file);
             
             if (!oldFileHash || oldFileHash !== newFileHash || isCorrupted) {
                 // 新文件、文件内容变化，或数据损坏需修复，添加所有chunks
+=======
+
+            if (!oldFileHash || oldFileHash !== newFileHash) {
+                // 新文件或文件内容变化，添加所有chunks
+>>>>>>> 0b10395 (我的第一次提交VCPtoolbox)
                 for (const chunkData of currentChunks) {
                     chunksToAdd.push({
                         text: chunkData.text,
@@ -655,9 +684,11 @@ class VectorDBManager {
         throw new Error(`Failed to get embeddings after ${this.config.retryAttempts} attempts: ${lastError.message}`);
     }
 
+    //me 读取 可可的日记 文件夹下的所有 .txt 和 .md 文件，将它们切块、向量化，并构建或更新一个名为 可可的日记.bin 的向量索引文件。
     async scheduleDiaryBookProcessing(diaryName) {
         // ✅ 修复：统一在入口处管理 activeWorkers
         // 快速检查（无锁，快速拒绝）
+        //me 函数定义：接收一个日记本名称作为参数。
         if (this.activeWorkers.has(diaryName)) {
             console.log(`[VectorDB] Processing for "${diaryName}" is already in progress. Skipping.`);
             return;
@@ -671,7 +702,7 @@ class VectorDBManager {
             if (this.activeWorkers.has(diaryName)) {
                 return;
             }
-            
+
             // ✅ 立即标记为活动状态，防止重复调度
             this.activeWorkers.add(diaryName);
             console.log(`[VectorDB] Marked "${diaryName}" as active worker`);
@@ -685,7 +716,7 @@ class VectorDBManager {
         // ✅ 无论后续执行什么路径，都要确保清理 activeWorkers
         try {
             const diaryPath = path.join(DIARY_ROOT_PATH, diaryName);
-            
+
             try {
                 await fs.access(diaryPath);
             } catch (error) {
@@ -722,9 +753,9 @@ class VectorDBManager {
                 }
                 return;
             }
-            
+
             const changeRatio = totalOldChunks > 0 ? (chunksToAdd.length + labelsToDelete.length) / totalOldChunks : 1.0;
-     
+
             if (totalOldChunks === 0 || changeRatio > this.config.changeThreshold) {
                 console.log(`[VectorDB] Major changes detected (${(changeRatio * 100).toFixed(1)}%). Scheduling a full rebuild for "${diaryName}".`);
                 // ✅ Bug修复4：删除后立即转交
@@ -762,9 +793,9 @@ class VectorDBManager {
             console.log(`[VectorDB] Full rebuild worker for "${diaryName}" is already active. Skipping duplicate request.`);
             return false; // ✅ 返回false表示未启动
         }
-        
+
         console.log(`[VectorDB] Preparing to start full rebuild worker for "${diaryName}"`);
-        
+
         // ✅ 验证配置
         if (!this.apiKey || !this.apiUrl || !this.embeddingModel) {
             console.error(`[VectorDB] ❌ Missing required config for worker:`);
@@ -774,7 +805,7 @@ class VectorDBManager {
             this.storage.recordFailedRebuild(diaryName, 'Missing API configuration');
             return false; // ✅ 返回false表示未启动
         }
-        
+
         const workerConfig = {
             apiKey: this.apiKey,
             apiUrl: this.apiUrl,
@@ -783,14 +814,14 @@ class VectorDBManager {
             retryBaseDelay: this.config.retryBaseDelay,
             retryMaxDelay: this.config.retryMaxDelay,
         };
-        
+
         console.log(`[VectorDB] Worker config:`, {
             apiUrl: workerConfig.apiUrl,
             embeddingModel: workerConfig.embeddingModel,
             apiKeyPresent: !!workerConfig.apiKey,
             retryAttempts: workerConfig.retryAttempts,
         });
-        
+
         // ✅ 创建Worker（创建成功后立即标记为活动）
         let worker;
         try {
@@ -801,7 +832,7 @@ class VectorDBManager {
                     config: workerConfig
                 }
             });
-            
+
             // ✅ Worker创建成功，立即标记为活动（防止重复创建）
             // 这个标记会在Worker的exit事件中清理
             this.activeWorkers.add(diaryName);
@@ -819,17 +850,17 @@ class VectorDBManager {
                 task: message.task,
                 error: message.error || 'none'
             });
-            
+
             if (message.status === 'success' && message.task === 'fullRebuild') {
                 this.storage.updateFileHashes(message.diaryName, message.newManifestEntry);
                 // ✅ 清除失败重建记录
                 this.storage.clearFailedRebuild(message.diaryName);
-                
+
                 // ✅ 关键修复：清除内存中的索引，强制下次搜索时重新加载
                 this.indices.delete(message.diaryName);
                 this.chunkMaps.delete(message.diaryName);
                 console.log(`[VectorDB] Cleared in-memory cache for "${message.diaryName}" to force reload`);
-                
+
                 this.stats.lastUpdateTime = new Date().toISOString();
                 console.log(`[VectorDB] ✅ Worker successfully completed full rebuild for "${message.diaryName}".`);
             } else if (message.status === 'error') {
@@ -839,7 +870,7 @@ class VectorDBManager {
                     console.warn(`[VectorDB] ⏸️ Worker paused due to rate limit for "${message.diaryName}"`);
                     console.warn(`[VectorDB] Progress: ${message.processedFiles}/${message.totalFiles} files completed`);
                     console.warn(`[VectorDB] 😴 Taking a ${pauseMinutes}-minute break to let API quota recover...`);
-                    
+
                     // ✅ 核心改进：休息后自动重启Worker继续工作
                     setTimeout(() => {
                         console.log(`[VectorDB] ⏰ Break time over! Resuming work on "${message.diaryName}"...`);
@@ -871,7 +902,7 @@ class VectorDBManager {
             // ✅ Worker 停止时清理
             this.activeWorkers.delete(diaryName);
         });
-        
+
         worker.on('exit', (code) => {
             // ✅ 确保清理（幂等操作）
             this.activeWorkers.delete(diaryName);
@@ -890,7 +921,7 @@ class VectorDBManager {
                 console.log(`[VectorDB] ✅ Worker exited normally for "${diaryName}"`);
             }
         });
-        
+
         // ✅ 返回true表示Worker已启动
         return true;
     }
@@ -915,7 +946,7 @@ class VectorDBManager {
 
             // 2. 删除向量存储文件
             const deletePromises = [];
-            
+
             if (await this.fileExists(indexPath)) {
                 deletePromises.push(
                     fs.unlink(indexPath)
@@ -948,16 +979,19 @@ class VectorDBManager {
 
     watchDiaries() {
         console.log(`[VectorDB] Setting up file watcher for: ${DIARY_ROOT_PATH}`);
-        
+
         const watcher = chokidar.watch(DIARY_ROOT_PATH, {
             ignored: /(^|[\/\\])\../,
+            //me 4. 忽略初始事件：
+            //    - `ignoreInitial: true`: 监视器启动时，不会为所有已存在的文件触发 "add" 事件。
+            //      它只关心启动 *之后* 发生的变动。
             persistent: true,
             ignoreInitial: true,
             depth: 1,
         });
 
         const pendingChanges = new Map(); // diaryName → timeoutId
-        
+
         // ✅ 添加监控器状态日志
         watcher.on('ready', () => {
             console.log(`[VectorDB] File watcher is ready and monitoring for changes`);
@@ -965,7 +999,7 @@ class VectorDBManager {
             console.log(`[VectorDB] Watching ${Object.keys(watched).length} directories`);
             this.debugLog(`Watched paths:`, watched);
         });
-        
+
         watcher.on('error', (error) => {
             console.error(`[VectorDB] File watcher error:`, error);
         });
@@ -974,12 +1008,14 @@ class VectorDBManager {
             console.log(`[VectorDB] File change detected: ${filePath}`);
             const diaryName = path.basename(path.dirname(filePath));
             console.log(`[VectorDB] Extracted diary name: "${diaryName}" from path: ${filePath}`);
-            
+
+            //me 8. 过滤（黑名单）：
+            //    - 如果目录名以 "已整理" 开头，或是 "VCP论坛"，则忽略此次变动，直接返回。
             if (diaryName.startsWith('已整理') || diaryName === 'VCP论坛') {
                 console.log(`[VectorDB] Ignoring excluded diary: "${diaryName}"`);
                 return;
             }
-            
+
             // ✅ 如果已经在处理中，忽略文件变更
             if (this.activeWorkers.has(diaryName)) {
                 console.log(`[VectorDB] File change ignored for "${diaryName}" - already processing`);
@@ -1050,7 +1086,7 @@ class VectorDBManager {
             });
             this.cacheDiaryNameVectors();
         };
-
+        //me 19. "add": 当有新文件被创建时，调用 `handleFileChange`。
         watcher
             .on('add', (filePath) => {
                 console.log(`[VectorDB] Event: 'add' - ${filePath}`);
@@ -1068,7 +1104,7 @@ class VectorDBManager {
                 console.log(`[VectorDB] Event: 'unlinkDir' - ${dirPath}`);
                 handleDirUnlink(dirPath);
             });
-        
+
         console.log(`[VectorDB] File watcher event handlers registered`);
     }
 
@@ -1079,18 +1115,18 @@ class VectorDBManager {
     prepareTextForEmbedding(text) {
         // 1. 移除纯装饰性emoji
         const decorativeEmojis = /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu;
-        
+
         // 2. 保留有语义的标点和符号（！？。，等）
         let cleaned = text.replace(decorativeEmojis, ' ');
-        
+
         // 3. 清理多余空格
         cleaned = cleaned.replace(/\s+/g, ' ').trim();
-        
+
         // 4. 如果清理后为空，返回占位符
         if (cleaned.length === 0) {
             return '[EMPTY_CONTENT]';
         }
-        
+
         return cleaned;
     }
 
@@ -1102,25 +1138,25 @@ class VectorDBManager {
         const timestamp = Date.now();
         const random = Math.random().toString(36).substring(2, 8);
         const tempPath = `${filePath}.tmp.${timestamp}.${random}`;
-        
+
         try {
             // ✅ 确保父目录存在
             const dir = path.dirname(filePath);
             await fs.mkdir(dir, { recursive: true });
-            
+
             // 写入临时文件
             await fs.writeFile(tempPath, data);
-            
+
             // 验证写入成功
             if (!await this.fileExists(tempPath)) {
                 throw new Error(`Failed to create temp file: ${tempPath}`);
             }
-            
+
             const stats = await fs.stat(tempPath);
             if (stats.size === 0 && data.length > 0) {
                 throw new Error(`Temp file is empty: ${tempPath}`);
             }
-            
+
             // ✅ Windows 兼容：先删除再重命名
             try {
                 await fs.unlink(filePath);
@@ -1129,17 +1165,17 @@ class VectorDBManager {
                     throw e;
                 }
             }
-            
+
             // 重命名临时文件
             await fs.rename(tempPath, filePath);
-            
+
             // 验证最终文件存在
             if (!await this.fileExists(filePath)) {
                 throw new Error(`Final file was not created: ${filePath}`);
             }
-            
+
             this.debugLog(`Atomically wrote to ${path.basename(filePath)}`);
-            
+
         } catch (error) {
             console.error(`[VectorDB] Failed to write ${filePath}:`, {
                 path: tempPath,
@@ -1147,14 +1183,14 @@ class VectorDBManager {
                 error: error.message,
                 code: error.code
             });
-            
+
             // 清理临时文件
             try {
                 if (await this.fileExists(tempPath)) {
                     await fs.unlink(tempPath);
                 }
             } catch (e) { /* ignore */ }
-            
+
             throw error;
         }
     }
@@ -1191,15 +1227,15 @@ class VectorDBManager {
 
             const index = new HierarchicalNSW('l2', dimensions);
             index.readIndexSync(indexPath);
-            
+
             // ✅ 从SQLite数据库读取chunkMap
             const chunkMap = this.storage.getChunkMap(diaryName);
-            
+
             if (Object.keys(chunkMap).length === 0) {
                 console.warn(`[VectorDB] ChunkMap is empty for "${diaryName}", index file exists but no data in database`);
                 return false;
             }
-            
+
             this.indices.set(diaryName, index);
             this.chunkMaps.set(diaryName, chunkMap);
             this.lruCache.set(diaryName, { lastAccessed: Date.now() });
@@ -1217,10 +1253,10 @@ class VectorDBManager {
         const { diaryName, chunksToAdd, labelsToDelete, newFileHashes } = changeset;
 
         await this.acquireLock(diaryName);
-        
+
         // ✅ 定义标志，判断是否需要触发全量重建
         let shouldTriggerFullRebuild = false;
-        
+
         try {
             const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
             const indexPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}.bin`);
@@ -1244,11 +1280,11 @@ class VectorDBManager {
                 this.debugLog(`Backup creation failed (probably first creation):`, e.message);
                 hasBackup = false;
             }
-            
+
             // ✅ 从内存或数据库加载索引和chunkMap
             let index = this.indices.get(diaryName);
             let chunkMap = this.chunkMaps.get(diaryName);
-            
+
             // 如果内存中没有，尝试从数据库加载
             if (!index || !chunkMap) {
                 // ✅ 从数据库加载chunkMap（总是可用）
@@ -1260,7 +1296,7 @@ class VectorDBManager {
                     this.debugLog(`No index file for "${diaryName}", will create new one.`);
                 }
             }
-            
+
             // ✅ 统一深拷贝（无论来源是内存还是文件）
             chunkMap = JSON.parse(JSON.stringify(chunkMap || {}));
 
@@ -1269,12 +1305,12 @@ class VectorDBManager {
             // ✅ 预处理：先过滤再决定操作
             let validChunksToAdd = [];
             let validTextsForEmbedding = [];
-            
+
             if (chunksToAdd.length > 0) {
                 const textsForEmbedding = chunksToAdd.map(c => this.prepareTextForEmbedding(c.text));
                 validChunksToAdd = chunksToAdd.filter((_, i) => textsForEmbedding[i] !== '[EMPTY_CONTENT]');
                 validTextsForEmbedding = validChunksToAdd.map(c => this.prepareTextForEmbedding(c.text));
-                
+
                 if (validChunksToAdd.length < chunksToAdd.length) {
                     console.warn(`[VectorDB] Filtered out ${chunksToAdd.length - validChunksToAdd.length} empty/emoji-only chunks for "${diaryName}"`);
                 }
@@ -1301,11 +1337,11 @@ class VectorDBManager {
             if (!index) {
                 const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
                 const indexPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}.bin`);
-                
+
                 // 尝试加载现有索引
                 try {
                     await fs.access(indexPath);
-                    
+
                     // 获取dimensions
                     let dimensions;
                     if (validTextsForEmbedding.length > 0) {
@@ -1315,7 +1351,7 @@ class VectorDBManager {
                         const dummyEmbeddings = await this.getEmbeddingsWithRetry(["."]);
                         dimensions = dummyEmbeddings[0].length;
                     }
-                    
+
                     index = new HierarchicalNSW('l2', dimensions);
                     index.readIndexSync(indexPath);
                     this.indices.set(diaryName, index);
@@ -1347,21 +1383,21 @@ class VectorDBManager {
             if (validTextsForEmbedding.length > 0) {
                 try {
                     vectors = await this.getEmbeddingsWithRetry(validTextsForEmbedding);
-                    
+
                     if (vectors.length !== validTextsForEmbedding.length) {
                         throw new Error(`Embedding count mismatch: expected ${validTextsForEmbedding.length}, got ${vectors.length}`);
                     }
                 } catch (error) {
                     console.error(`[VectorDB] Embedding failed for "${diaryName}":`, error.message);
-                    
+
                     // ✅ embedding失败时，数据库尚未修改，只需回滚内存
                     this.chunkMaps.set(diaryName, originalChunkMap);
-                    
+
                     if (await this.fileExists(backupIndexPath)) {
                         await fs.copyFile(backupIndexPath, indexPath);
                         this.indices.delete(diaryName);
                     }
-                    
+
                     throw error;
                 }
             }
@@ -1370,7 +1406,7 @@ class VectorDBManager {
             if (vectors.length > 0) {
                 console.log(`[VectorDB] Adding ${vectors.length} new vectors to "${diaryName}".`);
                 let maxLabel = Object.keys(chunkMap).reduce((max, label) => Math.max(max, Number(label)), -1);
-                
+
                 // ✅ 修复：手动计算当前数量
                 const currentCount = Object.keys(chunkMap).length;
                 const requiredCapacity = currentCount + vectors.length;
@@ -1401,14 +1437,14 @@ class VectorDBManager {
             // 第五阶段：保存索引文件和数据库（事务性操作）
             const timestamp2 = Date.now();
             const tempIndexPath = `${indexPath}.tmp.${timestamp2}`;
-            
+
             let writeSuccess = false;
-            
+
             try {
                 // Step 1: 写入临时索引文件
                 this.debugLog(`Writing to temp index: ${path.basename(tempIndexPath)}`);
                 await index.writeIndex(tempIndexPath);
-                
+
                 // Step 2: 验证索引文件
                 if (!await this.fileExists(tempIndexPath)) {
                     throw new Error(`Index file was not created at ${tempIndexPath}`);
@@ -1417,17 +1453,17 @@ class VectorDBManager {
                 if (indexStats.size === 0) {
                     throw new Error(`Index file is empty: ${tempIndexPath}`);
                 }
-                
+
                 // Step 3: 保存到数据库（事务性操作）
                 this.debugLog(`Saving chunkMap to database`);
                 this.storage.saveChunks(diaryName, chunkMap);
-                
+
                 // Step 4: 验证数据库保存
                 const savedChunkMap = this.storage.getChunkMap(diaryName);
                 if (Object.keys(savedChunkMap).length !== Object.keys(chunkMap).length) {
                     throw new Error(`Database save verification failed: expected ${Object.keys(chunkMap).length}, got ${Object.keys(savedChunkMap).length}`);
                 }
-                
+
                 // Step 5: 替换索引文件（Windows 兼容方式）
                 this.debugLog(`Replacing old index file`);
                 try {
@@ -1442,16 +1478,16 @@ class VectorDBManager {
                     this.debugLog(`Index file doesn't exist, skipping unlink`);
                 }
                 await fs.rename(tempIndexPath, indexPath);
-                
+
                 writeSuccess = true;
                 this.debugLog(`Index and database update completed successfully`);
-                
+
             } catch (writeError) {
                 console.error(`[VectorDB] Write operation failed for "${diaryName}":`, {
                     error: writeError.message,
                     tempIndex: tempIndexPath
                 });
-                
+
                 // ✅ 修复：回滚数据库（因为索引文件保存失败）
                 try {
                     console.log(`[VectorDB] Rolling back database changes for "${diaryName}"`);
@@ -1460,7 +1496,7 @@ class VectorDBManager {
                 } catch (dbRollbackError) {
                     console.error(`[VectorDB] Failed to rollback database:`, dbRollbackError.message);
                 }
-                
+
                 // 清理临时文件
                 try {
                     if (await this.fileExists(tempIndexPath)) {
@@ -1470,10 +1506,10 @@ class VectorDBManager {
                 } catch (cleanupError) {
                     console.warn(`[VectorDB] Failed to cleanup temp file:`, cleanupError.message);
                 }
-                
+
                 throw writeError;
             }
-            
+
             // ✅ 只有在写入成功后才清理备份
             if (writeSuccess && hasBackup) {
                 try {
@@ -1494,7 +1530,7 @@ class VectorDBManager {
 
             this.stats.lastUpdateTime = new Date().toISOString();
             console.log(`[VectorDB] Incremental update for "${diaryName}" completed successfully.`);
-            
+
         } catch (error) {
             console.error(`[VectorDB] Critical error during changeset application for "${diaryName}":`, error);
             
@@ -1589,9 +1625,9 @@ class VectorDBManager {
                 efSearch: this.config.efSearch,
                 vectorStorePath: VECTOR_STORE_PATH,
             };
-            
+
             const message = await this.searchWorkerPool.execute(workerData);
-            
+
             console.log(`[VectorDB][Search] Received message from worker for "${diaryName}". Status: ${message.status}`);
             if (message.status === 'success') {
                 const searchResults = message.results;
@@ -1619,7 +1655,7 @@ class VectorDBManager {
      */
     async searchWithTagBoost(diaryName, queryVector, k = 3, tagWeight = 0.65) {
         const startTime = performance.now();
-        
+
         // 如果Tag功能未启用，回退到普通搜索
         if (!this.tagVectorEnabled || !this.tagVectorManager) {
             console.log(`[VectorDB][TagSearch] Tag search disabled, fallback to normal search`);
@@ -1638,7 +1674,7 @@ class VectorDBManager {
             
             console.log(`[VectorDB][TagSearch] Recalling ${topTagCount} tags for network search (k=${k})`);
             const matchedTags = await this.tagVectorManager.searchSimilarTags(queryVector, topTagCount);
-            
+
             if (matchedTags.length === 0) {
                 console.log(`[VectorDB][TagSearch] No matched tags, fallback to normal search`);
                 return await this.search(diaryName, queryVector, k);
@@ -1855,16 +1891,16 @@ class VectorDBManager {
         const memUsage = process.memoryUsage().heapUsed;
         if (memUsage > this.config.maxMemoryUsage) {
             console.log('[VectorDB] Memory threshold exceeded, evicting least recently used indices...');
-            const entries = Array.from(this.lruCache.entries()).sort(([,a], [,b]) => a.lastAccessed - b.lastAccessed);
+            const entries = Array.from(this.lruCache.entries()).sort(([, a], [, b]) => a.lastAccessed - b.lastAccessed);
             for (const [diaryName] of entries) {
                 if (process.memoryUsage().heapUsed < this.config.maxMemoryUsage * 0.8) break;
-                
+
                 // ✅ 跳过正在处理的索引
                 if (this.activeWorkers.has(diaryName)) {
                     console.log(`[VectorDB] Skipping "${diaryName}" - currently active`);
                     continue;
                 }
-                
+
                 this.indices.delete(diaryName);
                 this.chunkMaps.delete(diaryName);
                 this.lruCache.delete(diaryName);
@@ -1879,11 +1915,11 @@ class VectorDBManager {
      */
     async cacheDiaryNameVectors() {
         console.log('[VectorDB] Starting to sync diary book name vectors...');
-        
+
         // ✅ 加锁防止并发调用
         const lockKey = 'diary_name_vectors';
         await this.acquireLock(lockKey);
-        
+
         try {
             const diaryNameVectors = this.storage.loadDiaryNameVectors();
 
@@ -1967,12 +2003,12 @@ class VectorDBManager {
         current.frequency++;
         current.lastAccessed = Date.now();
         this.usageStatsBuffer.set(diaryName, current);
-        
+
         // 防抖：重置定时器
         if (this.usageStatsFlushTimer) {
             clearTimeout(this.usageStatsFlushTimer);
         }
-        
+
         // 设置新的延迟写入任务
         this.usageStatsFlushTimer = setTimeout(() => {
             this.flushUsageStats().catch(e => {
@@ -1980,7 +2016,7 @@ class VectorDBManager {
             });
         }, this.usageStatsFlushDelay);
     }
-    
+
     /**
      * ✅ 将缓冲区数据批量写入磁盘
      */
@@ -1989,7 +2025,7 @@ class VectorDBManager {
             this.debugLog('Usage stats buffer is empty, skipping flush');
             return;
         }
-        
+
         const lockKey = 'usage_stats';
         let bufferSnapshot; // ✅ 在外部作用域定义，避免catch块中未定义
         let lockAcquired = false; // ✅ Bug修复3：追踪锁状态
@@ -2000,30 +2036,30 @@ class VectorDBManager {
             
             bufferSnapshot = new Map(this.usageStatsBuffer);
             this.usageStatsBuffer.clear();
-            
+
             // ✅ 直接写入SQLite
             this.storage.updateUsageStats(bufferSnapshot);
-            
+
             this.debugLog(`Flushed ${bufferSnapshot.size} usage stats to database`);
-            
+
         } catch (e) {
             console.error('[VectorDB] Failed to flush usage stats:', e.message);
-            
+
             // 写入失败时放回缓冲区
             if (bufferSnapshot) { // ✅ 检查是否存在
                 for (const [diaryName, data] of bufferSnapshot.entries()) {
-                const existing = this.usageStatsBuffer.get(diaryName);
-                if (existing) {
-                    existing.frequency += data.frequency;
-                    if (data.lastAccessed > existing.lastAccessed) {
-                        existing.lastAccessed = data.lastAccessed;
+                    const existing = this.usageStatsBuffer.get(diaryName);
+                    if (existing) {
+                        existing.frequency += data.frequency;
+                        if (data.lastAccessed > existing.lastAccessed) {
+                            existing.lastAccessed = data.lastAccessed;
+                        }
+                    } else {
+                        this.usageStatsBuffer.set(diaryName, data);
                     }
-                } else {
-                    this.usageStatsBuffer.set(diaryName, data);
                 }
             }
-            }
-            
+
             if (!this.isShuttingDown) {
                 setTimeout(() => {
                     this.flushUsageStats().catch(console.error);
@@ -2040,9 +2076,9 @@ class VectorDBManager {
         console.log('[VectorDB] Starting index pre-warming...');
         const usageStats = this.storage.loadUsageStats();
         const sortedDiaries = Object.entries(usageStats)
-            .sort(([,a], [,b]) => b.frequency - a.frequency)
+            .sort(([, a], [, b]) => b.frequency - a.frequency)
             .map(([name]) => name);
-        
+
         const preLoadCount = Math.min(this.config.preWarmCount, sortedDiaries.length);
         if (preLoadCount === 0) {
             console.log('[VectorDB] No usage stats found, skipping pre-warming.');
@@ -2204,46 +2240,46 @@ class VectorDBManager {
         await this.acquireLock(diaryName);
         try {
             console.log(`[VectorDB] Rebuilding index from database for "${diaryName}"...`);
-            
+
             const chunkMap = this.storage.getChunkMap(diaryName);
             const chunks = Object.values(chunkMap).map(data => data.text);
-            
+
             if (chunks.length === 0) {
                 console.warn(`[VectorDB] No chunks in database for "${diaryName}", skipping rebuild`);
                 return;
             }
-            
+
             // 清理后的文本用于embedding
             const cleanedTexts = chunks.map(text => this.prepareTextForEmbedding(text));
-            
+
             // 获取embeddings
             console.log(`[VectorDB] Getting embeddings for ${chunks.length} chunks from database...`);
             const vectors = await this.getEmbeddingsWithRetry(cleanedTexts);
-            
+
             if (vectors.length !== chunks.length) {
                 throw new Error(`Embedding count mismatch: expected ${chunks.length}, got ${vectors.length}`);
             }
-            
+
             // 创建新索引
             const dimensions = vectors[0].length;
             const index = new HierarchicalNSW('l2', dimensions);
             index.initIndex(chunks.length);
-            
+
             // 添加所有向量
             const labels = Object.keys(chunkMap).map(Number).sort((a, b) => a - b);
             for (let i = 0; i < vectors.length; i++) {
                 index.addPoint(vectors[i], labels[i]);
             }
-            
+
             // 保存索引文件
             const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
             const indexPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}.bin`);
             await index.writeIndex(indexPath);
-            
+
             // 更新内存
             this.indices.set(diaryName, index);
             this.chunkMaps.set(diaryName, chunkMap);
-            
+
             console.log(`[VectorDB] ✅ Index rebuilt from database for "${diaryName}" (${chunks.length} vectors)`);
         } catch (error) {
             console.error(`[VectorDB] Failed to rebuild index from database for "${diaryName}":`, error);
@@ -2256,13 +2292,13 @@ class VectorDBManager {
     async shutdown() {
         console.log('[VectorDB] Shutting down...');
         this.isShuttingDown = true;
-        
+
         // ✅ 取消待处理的flush定时器
         if (this.usageStatsFlushTimer) {
             clearTimeout(this.usageStatsFlushTimer);
             this.usageStatsFlushTimer = null;
         }
-        
+
         // ✅ 立即刷新缓冲区数据（确保数据不丢失）
         if (this.usageStatsBuffer.size > 0) {
             console.log('[VectorDB] Flushing usage stats buffer before shutdown...');
@@ -2273,7 +2309,7 @@ class VectorDBManager {
                 console.error('[VectorDB] Failed to flush usage stats during shutdown:', e);
             }
         }
-        
+
         // 关闭 worker pool
         if (this.searchWorkerPool && typeof this.searchWorkerPool.terminate === 'function') {
             await this.searchWorkerPool.terminate();
@@ -2281,10 +2317,10 @@ class VectorDBManager {
         } else {
             console.log('[VectorDB] Worker pool not found or does not have a terminate method.');
         }
-        
+
         // 关闭数据库连接
         this.storage.close();
-        
+
         console.log('[VectorDB] Shutdown complete.');
     }
 }
@@ -2301,7 +2337,7 @@ async function getEmbeddingsInWorker(chunks, config) {
 
     for (let i = 0; i < chunks.length; i += batchSize) {
         const batch = chunks.slice(i, i + batchSize);
-        
+
         let lastError;
         for (let attempt = 1; attempt <= retryAttempts; attempt++) {
             try {
@@ -2326,34 +2362,34 @@ async function getEmbeddingsInWorker(chunks, config) {
                 }
 
                 const data = await response.json();
-                
+
                 if (!data.data || !Array.isArray(data.data)) {
                     throw new Error(`Invalid API response: missing data array`);
                 }
-                
+
                 const vectors = data.data.map(item => item.embedding);
-                
+
                 for (let j = 0; j < vectors.length; j++) {
                     if (!vectors[j] || !Array.isArray(vectors[j]) || vectors[j].length === 0) {
                         throw new Error(`Invalid embedding at index ${j} for text: "${batch[j].substring(0, 50)}..."`);
                     }
                 }
-                
+
                 if (vectors.length !== batch.length) {
                     throw new Error(`Batch size mismatch: sent ${batch.length}, received ${vectors.length}`);
                 }
-                
+
                 allVectors.push(...vectors);
-                
+
                 lastError = null;
                 break;
             } catch (error) {
                 lastError = error;
                 console.error(`[VectorDB][Worker] Batch attempt ${attempt}/${retryAttempts} failed:`, error.message);
-                
+
                 if (attempt < retryAttempts) {
                     let delay;
-                    
+
                     if (error.status === 429) {
                         const retryAfter = error.headers?.get('retry-after');
                         if (retryAfter) {
@@ -2371,7 +2407,7 @@ async function getEmbeddingsInWorker(chunks, config) {
                     } else {
                         delay = Math.min(retryBaseDelay * Math.pow(2, attempt - 1), retryMaxDelay);
                     }
-                    
+
                     await new Promise(resolve => setTimeout(resolve, delay));
                 }
             }
@@ -2390,7 +2426,7 @@ async function getEmbeddingsInWorker(chunks, config) {
             } else {
                 // 其他错误按原逻辑处理
                 throw new Error(
-                    `Failed to embed batch (chunks ${i}-${i+batch.length-1}) after ${retryAttempts} attempts.\n` +
+                    `Failed to embed batch (chunks ${i}-${i + batch.length - 1}) after ${retryAttempts} attempts.\n` +
                     `Last error: ${lastError.message}\n` +
                     `Sample text: "${batch[0].substring(0, 100)}..."`
                 );
@@ -2402,7 +2438,7 @@ async function getEmbeddingsInWorker(chunks, config) {
 
 async function processSingleDiaryBookInWorker(diaryName, config) {
     const VectorDBStorage = require('./VectorDBStorage.js');
-    
+
     // ✅ 定义 emoji 清理函数（与主类保持一致）
     const prepareTextForEmbedding = (text) => {
         const decorativeEmojis = /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu;
@@ -2422,35 +2458,35 @@ async function processSingleDiaryBookInWorker(diaryName, config) {
         // ✅ Step 1: 检查是否有未完成的构建进度
         const progress = storage.getBuildProgress(diaryName);
         const processedFiles = progress ? new Set(progress.processedFiles) : new Set();
-        
+
         console.log(`[VectorDB][Worker] "${diaryName}" build progress: ${processedFiles.size}/${relevantFiles.length} files processed`);
-        
+
         // ✅ Step 2: 加载已有的索引和chunkMap（如果存在）
         const safeFileNameBase = Buffer.from(diaryName, 'utf-8').toString('base64url');
         const indexPath = path.join(VECTOR_STORE_PATH, `${safeFileNameBase}.bin`);
-        
+
         let index = null;
         let chunkMap = {};
         let labelCounter = 0;
         let dimensions = null;
-        
+
         // 尝试加载现有索引
         try {
             await fs.access(indexPath);
             const existingChunkMap = storage.getChunkMap(diaryName);
-            
+
             if (Object.keys(existingChunkMap).length > 0) {
                 chunkMap = existingChunkMap;
                 labelCounter = Math.max(...Object.keys(chunkMap).map(Number)) + 1;
-                
+
                 // 获取dimensions
                 const dummyText = Object.values(chunkMap)[0].text;
                 const dummyEmbedding = await getEmbeddingsInWorker([prepareTextForEmbedding(dummyText)], config);
                 dimensions = dummyEmbedding[0].length;
-                
+
                 index = new HierarchicalNSW('l2', dimensions);
                 index.readIndexSync(indexPath);
-                
+
                 console.log(`[VectorDB][Worker] Loaded existing index with ${Object.keys(chunkMap).length} chunks, continuing from label ${labelCounter}`);
             }
         } catch (e) {
@@ -2461,7 +2497,7 @@ async function processSingleDiaryBookInWorker(diaryName, config) {
         const fileHashes = {};
         const SAVE_INTERVAL = parseInt(process.env.VECTORDB_SAVE_INTERVAL) || 10; // 每10个文件保存一次
         let filesProcessedSinceLastSave = 0;
-        
+
         for (const file of relevantFiles) {
             // 跳过已处理的文件
             if (processedFiles.has(file)) {
@@ -2471,38 +2507,38 @@ async function processSingleDiaryBookInWorker(diaryName, config) {
                 fileHashes[file] = crypto.createHash('md5').update(content).digest('hex');
                 continue;
             }
-            
+
             const filePath = path.join(diaryPath, file);
             const content = await fs.readFile(filePath, 'utf-8');
             fileHashes[file] = crypto.createHash('md5').update(content).digest('hex');
-            
+
             const chunks = chunkText(content);
             const fileChunks = [];
             const fileChunkTexts = [];
-            
+
             for (const chunk of chunks) {
                 const cleanedText = prepareTextForEmbedding(chunk);
                 if (cleanedText === '[EMPTY_CONTENT]') {
                     continue;
                 }
-                
+
                 const chunkHash = crypto.createHash('sha256').update(chunk).digest('hex');
                 fileChunks.push({ chunk, chunkHash });
                 fileChunkTexts.push(cleanedText);
             }
-            
+
             if (fileChunks.length === 0) {
                 console.warn(`[VectorDB][Worker] File "${file}" has no valid chunks, skipping`);
                 processedFiles.add(file);
                 continue;
             }
-            
+
             // ✅ 获取这个文件的所有embeddings
             console.log(`[VectorDB][Worker] Processing file "${file}" (${fileChunks.length} chunks)...`);
             let fileVectors;
             try {
                 fileVectors = await getEmbeddingsInWorker(fileChunkTexts, config);
-                
+
                 if (fileVectors.length !== fileChunks.length) {
                     throw new Error(`Embedding count mismatch for file "${file}": expected ${fileChunks.length}, got ${fileVectors.length}`);
                 }
@@ -2512,7 +2548,7 @@ async function processSingleDiaryBookInWorker(diaryName, config) {
                     console.warn(`[VectorDB][Worker] ⏸️ Rate limit encountered while processing "${file}"`);
                     console.warn(`[VectorDB][Worker] Progress saved: ${processedFiles.size}/${relevantFiles.length} files completed`);
                     console.warn(`[VectorDB][Worker] Next file to process: "${file}"`);
-                    
+
                     // 保存当前进度（不包括当前失败的文件）
                     if (processedFiles.size > 0) {
                         await index.writeIndex(indexPath);
@@ -2520,9 +2556,9 @@ async function processSingleDiaryBookInWorker(diaryName, config) {
                         storage.saveBuildProgress(diaryName, Array.from(processedFiles), relevantFiles.length, Array.from(processedFiles).pop());
                         console.log(`[VectorDB][Worker] ✅ Progress checkpoint saved before rate limit pause`);
                     }
-                    
+
                     storage.close();
-                    
+
                     // ✅ 抛出特殊错误让Manager知道这是正常的暂停
                     const pauseError = new Error(`Rate limit reached. Progress saved at ${processedFiles.size}/${relevantFiles.length} files. Will resume automatically on next run.`);
                     pauseError.isPauseError = true;
@@ -2530,11 +2566,11 @@ async function processSingleDiaryBookInWorker(diaryName, config) {
                     pauseError.totalFiles = relevantFiles.length;
                     throw pauseError;
                 }
-                
+
                 // 其他错误正常抛出
                 throw error;
             }
-            
+
             // ✅ 初始化索引（如果还没有）
             if (!index) {
                 dimensions = fileVectors[0].length;
@@ -2588,35 +2624,35 @@ async function processSingleDiaryBookInWorker(diaryName, config) {
                     chunkHash: fileChunks[i].chunkHash
                 };
             }
-            
+
             processedFiles.add(file);
             filesProcessedSinceLastSave++;
-            
+
             // ✅ Step 4: 定期保存进度（每N个文件或最后一个文件）
             const isLastFile = processedFiles.size === relevantFiles.length;
             const shouldSave = filesProcessedSinceLastSave >= SAVE_INTERVAL || isLastFile;
-            
+
             if (shouldSave) {
                 console.log(`[VectorDB][Worker] Saving progress: ${processedFiles.size}/${relevantFiles.length} files (${Object.keys(chunkMap).length} chunks)...`);
-                
+
                 // 保存索引文件
                 await index.writeIndex(indexPath);
-                
+
                 // 保存chunkMap到数据库
                 storage.saveChunks(diaryName, chunkMap);
-                
+
                 // 验证保存
                 const savedChunkMap = storage.getChunkMap(diaryName);
                 if (Object.keys(savedChunkMap).length !== Object.keys(chunkMap).length) {
                     throw new Error(`Checkpoint save verification failed: expected ${Object.keys(chunkMap).length}, got ${Object.keys(savedChunkMap).length}`);
                 }
-                
+
                 // 保存进度
                 if (!isLastFile) {
                     storage.saveBuildProgress(diaryName, Array.from(processedFiles), relevantFiles.length, file);
                     console.log(`[VectorDB][Worker] ✅ Checkpoint saved: ${processedFiles.size}/${relevantFiles.length} files`);
                 }
-                
+
                 filesProcessedSinceLastSave = 0;
             }
         }
@@ -2628,20 +2664,20 @@ async function processSingleDiaryBookInWorker(diaryName, config) {
 
         // ✅ Step 6: 清除构建进度（完成）
         storage.clearBuildProgress(diaryName);
-        
+
         console.log(`[VectorDB][Worker] ✅ Full rebuild completed successfully for "${diaryName}" (${Object.keys(chunkMap).length} chunks from ${relevantFiles.length} files).`);
         storage.close();
         return fileHashes;
-        
+
     } catch (error) {
         console.error(`[VectorDB][Worker] ❌ Build failed for "${diaryName}":`, error.message);
-        
+
         // ✅ 关键：失败时不删除已保存的进度！
         // 保留索引文件和数据库数据，下次可以继续
         try {
             storage.close();
         } catch (e) { /* ignore */ }
-        
+
         throw error;
     }
 }

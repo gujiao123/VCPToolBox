@@ -29,6 +29,7 @@ function debugLog(message, ...args) {
 }
 
 // --- Output Function (to stdout) ---
+//me 插件必须把结果通过 stdout 返回（服务器读取该 stdout 并解析 JSON），因此不能把调试信息写到 stdout。
 function sendOutput(data) {
     try {
         const jsonString = JSON.stringify(data);
@@ -42,18 +43,19 @@ function sendOutput(data) {
 }
 
 // --- Helper Function for Sanitization ---
+//me 去除非法文件名字符（\/:*?"<>|）、控制字符、两端空白和多余的 . 等，最后保证非空（回退 'Untitled'）
 function sanitizePathComponent(name) {
     if (!name || typeof name !== 'string') {
         return 'Untitled'; // Return a default name for invalid input
     }
     // Replace invalid characters for Windows/Linux/macOS filenames
     const sanitized = name.replace(/[\\/:*?"<>|]/g, '')
-                         // Remove control characters
-                         .replace(/[\x00-\x1f\x7f]/g, '')
-                         // Trim whitespace and dots from both ends, which are problematic on Windows
-                         .trim()
-                         .replace(/^[.]+|[.]+$/g, '')
-                         .trim(); // Trim again in case dots were removed
+        // Remove control characters
+        .replace(/[\x00-\x1f\x7f]/g, '')
+        // Trim whitespace and dots from both ends, which are problematic on Windows
+        .trim()
+        .replace(/^[.]+|[.]+$/g, '')
+        .trim(); // Trim again in case dots were removed
 
     // If the name is empty after sanitization (e.g., it was just "."), use a fallback.
     return sanitized || 'Untitled';
@@ -70,15 +72,15 @@ function detectTagLine(content) {
     if (lines.length === 0) {
         return { hasTag: false, lastLine: '', contentWithoutLastLine: content };
     }
-    
+
     const lastLine = lines[lines.length - 1].trim();
     const tagPattern = /^Tag:\s*.+/i;
-    
+
     const hasTag = tagPattern.test(lastLine);
     const contentWithoutLastLine = hasTag ? lines.slice(0, -1).join('\n') : content;
-    
+
     debugLog(`Tag detection - hasTag: ${hasTag}, lastLine: "${lastLine}"`);
-    
+
     return {
         hasTag,
         lastLine,
@@ -93,21 +95,21 @@ function detectTagLine(content) {
  */
 function fixTagFormat(tagLine) {
     debugLog('Fixing tag line format:', tagLine);
-    
+
     // 移除首行缩进和两端空格
     let fixed = tagLine.trim();
-    
+
     // 确保以"Tag:"开头（不区分大小写，但统一为"Tag:"）
     fixed = fixed.replace(/^tag:\s*/i, 'Tag: ');
-    
+
     // 如果没有"Tag:"前缀，添加它
     if (!fixed.startsWith('Tag: ')) {
         fixed = 'Tag: ' + fixed;
     }
-    
+
     // 提取Tag内容部分（去掉"Tag: "前缀）
     const tagContent = fixed.substring(5).trim();
-    
+
     // 修复标点符号：
     // 1. 将中文冒号替换为空（因为前面已经有英文冒号）
     // 2. 将中文逗号、全角逗号、顿号都替换为英文逗号+空格
@@ -115,18 +117,18 @@ function fixTagFormat(tagLine) {
         .replace(/[\uff1a]/g, '') // 中文冒号 ：
         .replace(/[\uff0c]/g, ', ') // 中文逗号 ，
         .replace(/[\u3001]/g, ', '); // 顿号 、
-    
+
     // 规范化逗号+空格格式：确保逗号后有且仅有一个空格
     normalizedContent = normalizedContent
         .replace(/,\s*/g, ', ') // 逗号后添加空格
         .replace(/,\s{2,}/g, ', ') // 多个空格替换为一个
         .replace(/\s+,/g, ','); // 逗号前的空格删除
-    
+
     // 去除多余的空格
     normalizedContent = normalizedContent.replace(/\s{2,}/g, ' ').trim();
-    
+
     const result = 'Tag: ' + normalizedContent;
-    
+
     debugLog('Fixed tag line:', result);
     return result;
 }
@@ -138,17 +140,17 @@ function fixTagFormat(tagLine) {
  */
 function extractTagFromAIResponse(aiResponse) {
     debugLog('Extracting tag from AI response:', aiResponse);
-    
+
     // 匹配 [[Tag: ...]] 格式
     const match = aiResponse.match(/\[\[Tag:\s*(.+?)\]\]/i);
-    
+
     if (match && match[1]) {
         const tagContent = match[1].trim();
         const result = 'Tag: ' + tagContent;
         debugLog('Extracted tag:', result);
         return result;
     }
-    
+
     debugLog('No tag found in AI response');
     return null;
 }
@@ -170,13 +172,13 @@ function delay(ms) {
  */
 async function generateTagsWithAI(content, maxRetries = 3) {
     debugLog('Generating tags with AI model...');
-    
+
     // 检查API配置
     if (!API_KEY || !API_URL) {
         console.error('[DailyNoteWrite] API configuration missing. Cannot generate tags.');
         return null;
     }
-    
+
     // 读取TagMaster提示词
     const promptFilePath = path.join(__dirname, TAG_MODEL_PROMPT_FILE);
     let systemPrompt;
@@ -186,7 +188,7 @@ async function generateTagsWithAI(content, maxRetries = 3) {
         console.error('[DailyNoteWrite] Failed to read TagMaster prompt file:', err.message);
         return null;
     }
-    
+
     // 构建请求数据
     const requestData = {
         model: TAG_MODEL,
@@ -203,12 +205,12 @@ async function generateTagsWithAI(content, maxRetries = 3) {
         max_tokens: TAG_MODEL_MAX_TOKENS,
         temperature: 0.7
     };
-    
+
     // 带退避重试的API调用
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
             debugLog(`Calling AI API (attempt ${attempt}/${maxRetries}) with model: ${TAG_MODEL}`);
-            
+
             const fetch = (await import('node-fetch')).default;
             const response = await fetch(`${API_URL}/v1/chat/completions`, {
                 method: 'POST',
@@ -219,12 +221,12 @@ async function generateTagsWithAI(content, maxRetries = 3) {
                 body: JSON.stringify(requestData),
                 timeout: 60000 // 60秒超时
             });
-            
+
             // 检查是否为需要重试的错误码
             if (response.status === 500 || response.status === 503) {
                 const errorText = await response.text();
                 console.error(`[DailyNoteWrite] API returned ${response.status} (attempt ${attempt}/${maxRetries}):`, errorText);
-                
+
                 if (attempt < maxRetries) {
                     // 指数退避：第1次重试等1秒，第2次等2秒，第3次等4秒
                     const backoffTime = Math.pow(2, attempt - 1) * 1000;
@@ -236,21 +238,21 @@ async function generateTagsWithAI(content, maxRetries = 3) {
                     return null;
                 }
             }
-            
+
             // 其他错误码不重试
             if (!response.ok) {
                 const errorText = await response.text();
                 console.error('[DailyNoteWrite] AI API error:', response.status, errorText);
                 return null;
             }
-            
+
             // 成功响应，解析结果
             const result = await response.json();
-            
+
             if (result.choices && result.choices.length > 0) {
                 const aiResponse = result.choices[0].message.content;
                 debugLog('AI response:', aiResponse);
-                
+
                 // 提取Tag行
                 const tagLine = extractTagFromAIResponse(aiResponse);
                 if (tagLine) {
@@ -261,10 +263,10 @@ async function generateTagsWithAI(content, maxRetries = 3) {
                 console.error('[DailyNoteWrite] Unexpected AI response format:', result);
                 return null;
             }
-            
+
         } catch (error) {
             console.error(`[DailyNoteWrite] Error on attempt ${attempt}/${maxRetries}:`, error.message);
-            
+
             if (attempt < maxRetries) {
                 // 网络错误也进行重试
                 const backoffTime = Math.pow(2, attempt - 1) * 1000;
@@ -277,7 +279,7 @@ async function generateTagsWithAI(content, maxRetries = 3) {
             }
         }
     }
-    
+
     // 理论上不会到达这里，但为了安全返回null
     return null;
 }
@@ -289,10 +291,10 @@ async function generateTagsWithAI(content, maxRetries = 3) {
  */
 async function processTagsInContent(contentText) {
     debugLog('Processing tags in content...');
-    
+
     // 检测是否有Tag行
     const detection = detectTagLine(contentText);
-    
+
     if (detection.hasTag) {
         // 有Tag，修复格式
         debugLog('Tag detected, fixing format...');
@@ -303,7 +305,7 @@ async function processTagsInContent(contentText) {
         // 没有Tag，调用AI生成
         debugLog('No tag detected, generating with AI...');
         const generatedTag = await generateTagsWithAI(contentText);
-        
+
         if (generatedTag) {
             // AI生成了Tag，修复格式并附加
             const fixedTag = fixTagFormat(generatedTag);
@@ -331,11 +333,13 @@ async function writeDiary(maidName, dateString, contentText) {
     debugLog('Content after tag processing (length):', processedContent.length);
 
     // Trim maidName to prevent folder/file name issues with whitespace, especially on Windows.
+    //me 移除 maidName 两侧的空格，以防在 Windows 等系统上导致路径或文件名问题。
     const trimmedMaidName = maidName.trim();
 
     let folderName = trimmedMaidName;
     let actualMaidName = trimmedMaidName;
     // Use regex to find [tag]name format
+    //me 是否遵循 [标签]姓名 格式
     const tagMatch = trimmedMaidName.match(/^\[(.*?)\](.*)$/);
 
     if (tagMatch) {
@@ -348,11 +352,12 @@ async function writeDiary(maidName, dateString, contentText) {
     }
 
     // Sanitize the final folderName to remove invalid characters and trailing spaces/dots.
+    //me调用一个外部函数 sanitizePathComponent，从 folderName 中移除 Windows/Linux 文件系统不允许的字符（如 \ / : * ? " 等）。
     const sanitizedFolderName = sanitizePathComponent(folderName);
     if (folderName !== sanitizedFolderName) {
         debugLog(`Sanitized folder name from "${folderName}" to "${sanitizedFolderName}"`);
     }
-
+    //me格式化日期：将输入的 dateString 中的所有常见分隔符替换为单个短横线 -。
     const datePart = dateString.replace(/[.\\\/\s-]/g, '-').replace(/-+/g, '-');
     const now = new Date();
     const hours = now.getHours().toString().padStart(2, '0');
@@ -370,6 +375,7 @@ async function writeDiary(maidName, dateString, contentText) {
 
     // **步骤2: 写入文件 - 使用处理后的内容（包含规范化的Tag）**
     await fs.mkdir(dirPath, { recursive: true });
+    //me 文件内容格式：[日期] - 姓名\n内容 这里把maidname进行了优化 等会看看怎么优化的
     const fileContent = `[${datePart}] - ${actualMaidName}\n${processedContent}`;
     await fs.writeFile(filePath, fileContent);
     debugLog(`Successfully wrote file (length: ${fileContent.length})`);
@@ -407,11 +413,11 @@ async function main() {
         }
     });
 
-     process.stdin.on('error', (err) => {
-         console.error("[DailyNoteWrite] Stdin error:", err);
-         sendOutput({ status: "error", message: "Error reading input." });
-         process.exitCode = 1; // Indicate failure
-     });
+    process.stdin.on('error', (err) => {
+        console.error("[DailyNoteWrite] Stdin error:", err);
+        sendOutput({ status: "error", message: "Error reading input." });
+        process.exitCode = 1; // Indicate failure
+    });
 }
 
 main();
