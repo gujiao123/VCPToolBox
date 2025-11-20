@@ -12,16 +12,19 @@ const TVS_DIR = path.join(__dirname, '..', 'TVStxt');
 const VCP_ASYNC_RESULTS_DIR = path.join(__dirname, '..', 'VCPAsyncResults');
 
 async function resolveAllVariables(text, model, role, context, processingStack = new Set()) {
+    // 1. 基础防错：如果文本是 null/undefined，返回空字符串
     if (text == null) return '';
     let processedText = String(text);
 
     // 通用正则表达式，匹配所有 {{...}} 格式的占位符
     const placeholderRegex = /\{\{([a-zA-Z0-9_:]+)\}\}/g;
     const matches = [...processedText.matchAll(placeholderRegex)];
-    
-    // 提取所有潜在的别名（去除 "agent:" 前缀）
-    const allAliases = new Set(matches.map(match => match[1].replace(/^agent:/, '')));
 
+    // 3. 提取并标准化别名
+    // match[1] 是花括号里面的内容。
+    // .replace(/^agent:/, '') 的作用是归一化：把 {{agent:Alice}} 和 {{Alice}} 都视为 "Alice"
+    const allAliases = new Set(matches.map(match => match[1].replace(/^agent:/, '')));
+    // 4. 遍历所有发现的变量名
     for (const alias of allAliases) {
         // 关键：使用 agentManager 来判断这是否是一个真正的Agent
         if (agentManager.isAgent(alias)) {
@@ -29,16 +32,20 @@ async function resolveAllVariables(text, model, role, context, processingStack =
                 console.error(`[AgentManager] Circular dependency detected! Stack: [${[...processingStack].join(' -> ')} -> ${alias}]`);
                 const errorMessage = `[Error: Circular agent reference detected for '${alias}']`;
                 processedText = processedText.replaceAll(`{{${alias}}}`, errorMessage).replaceAll(`{{agent:${alias}}}`, errorMessage);
-                continue;
+                continue;// 跳过当前 Agent，继续下一个
             }
-
+            // 6. 获取 Agent 的原始内容 (Prompt)
             const agentContent = await agentManager.getAgentPrompt(alias);
-            
+
             processingStack.add(alias);
+            // 【核心】：Agent 的内容里可能还包含其他变量，所以递归调用 resolveAllVariables 自身！
+            // 注意把 processingStack 传下去，保持状态
             const resolvedAgentContent = await resolveAllVariables(agentContent, model, role, context, processingStack);
             processingStack.delete(alias);
 
             // 替换两种可能的Agent占位符格式
+            // 8. 文本替换
+            // 将解析好的内容填回去。支持两种写法：{{Name}} 和 {{agent:Name}}
             processedText = processedText.replaceAll(`{{${alias}}}`, resolvedAgentContent);
             processedText = processedText.replaceAll(`{{agent:${alias}}}`, resolvedAgentContent);
         }
@@ -137,7 +144,7 @@ async function replaceOtherVariables(text, model, role, context) {
         let festivalInfo = `${yearName}${lunarDate.zodiac}年${lunarDate.dateStr}`;
         if (lunarDate.solarTerm) festivalInfo += ` ${lunarDate.solarTerm}`;
         processedText = processedText.replace(/\{\{Festival\}\}/g, festivalInfo);
-        
+
         const staticPlaceholderValues = pluginManager.getAllPlaceholderValues(); // Use the getter
         if (staticPlaceholderValues && staticPlaceholderValues.size > 0) {
             for (const [placeholder, value] of staticPlaceholderValues.entries()) {
@@ -180,7 +187,7 @@ async function replaceOtherVariables(text, model, role, context) {
             }
         }
     }
-    
+
     for (const rule of superDetectors) {
         if (typeof rule.detector === 'string' && rule.detector.length > 0 && typeof rule.output === 'string') {
             processedText = processedText.replaceAll(rule.detector, rule.output);
@@ -196,7 +203,7 @@ async function replaceOtherVariables(text, model, role, context) {
         const placeholder = asyncMatch[0];
         const pluginName = asyncMatch[1];
         const requestId = asyncMatch[2];
-        
+
         promises.push(
             (async () => {
                 const resultFilePath = path.join(VCP_ASYNC_RESULTS_DIR, `${pluginName}-${requestId}.json`);
@@ -207,7 +214,7 @@ async function replaceOtherVariables(text, model, role, context) {
                     if (callbackData && callbackData.message) {
                         replacementText = callbackData.message;
                     } else if (callbackData && callbackData.status === 'Succeed') {
-                         replacementText = `任务 ${pluginName} (ID: ${requestId}) 已成功完成。详情: ${JSON.stringify(callbackData.data || callbackData.result || callbackData)}`;
+                        replacementText = `任务 ${pluginName} (ID: ${requestId}) 已成功完成。详情: ${JSON.stringify(callbackData.data || callbackData.result || callbackData)}`;
                     } else if (callbackData && callbackData.status === 'Failed') {
                         replacementText = `任务 ${pluginName} (ID: ${requestId}) 处理失败。原因: ${callbackData.reason || JSON.stringify(callbackData.data || callbackData.error || callbackData)}`;
                     }
@@ -223,7 +230,7 @@ async function replaceOtherVariables(text, model, role, context) {
             })()
         );
     }
-    
+
     await Promise.all(promises);
     processedText = tempAsyncProcessedText;
 
@@ -233,6 +240,7 @@ async function replaceOtherVariables(text, model, role, context) {
 async function replacePriorityVariables(text, context, role) {
     const { pluginManager, cachedEmojiLists, DEBUG_MODE } = context;
     if (text == null) return '';
+    //me processedText 就是人物设定{{某某日记本}}这样的文本
     let processedText = String(text);
 
     // 只在 system role 中处理
@@ -251,12 +259,18 @@ async function replacePriorityVariables(text, context, role) {
     }
 
     // --- 日记本处理 (已修复循环风险) ---
+    //处理{{这样的日记本}}占位符
     const diaryPlaceholderRegex = /\{\{(.+?)日记本\}\}/g;
     let allDiariesData = {};
+    // 4.1 获取总账本
+    // 向 PluginManager 索要那个包含了所有角色日记的 JSON 字符串 (就是上一个问题里那个脚本生成的)
     const allDiariesDataString = pluginManager.getPlaceholderValue("{{AllCharacterDiariesData}}");
-
+    // 4.2 解析 JSON
+    // 检查拿到的数据是不是有效的 JSON 字符串，而不是 "[Placeholder...]" 这种未初始化的占位符
     if (allDiariesDataString && !allDiariesDataString.startsWith("[Placeholder")) {
         try {
+            // 把字符串解析成 JS 对象：{ "小雨日记本": "内容...", "Alice日记本": "内容..." }
+            //!! 注意现在还是文件夹名字为key
             allDiariesData = JSON.parse(allDiariesDataString);
         } catch (e) {
             console.error(`[replacePriorityVariables] Failed to parse AllCharacterDiariesData JSON: ${e.message}. Data: ${allDiariesDataString.substring(0, 100)}...`);
@@ -265,17 +279,59 @@ async function replacePriorityVariables(text, context, role) {
         if (DEBUG_MODE) console.warn(`[replacePriorityVariables] Placeholder {{AllCharacterDiariesData}} not found or not yet populated. Value: ${allDiariesDataString}`);
     }
 
-    // Step 1: Find all unique diary placeholders in the original text to avoid loops.
+    // === 4.3 安全替换策略 (防止死循环) ===
+
+    // 步骤 1：扫描并去重
+    // 使用 matchAll 找出文本中所有的日记标签，然后用 Set 去重。
+    // 结果示例：matches=['{{小雨日记本}}', '{{Alice日记本}}']
+    // [
+    //     // 第一个匹配项：{{可可的知识}}
+    //     [
+    //         "{{可可的知识}}",    // 下标 0: 匹配到的完整字符串
+    //         "可可的知识",       // 下标 1: 捕获组的内容（去掉了花括号，正是你需要的 key）
+    //         index: 4,           // 匹配开始的索引位置
+    //         input: "我正在看{{可可的知识}}的日记...", // 原始文本
+    //         groups: undefined   // 命名捕获组（通常未定义）
+    //     ],
+
+    //     // 第二个匹配项：{{Jack}}
+    //     [
+    //         "{{Jack}}",         // 下标 0
+    //         "Jack",             // 下标 1
+    //         index: 18,
+    //         input: "我正在看{{可可的知识}}的日记...",
+    //         groups: undefined
+    //     ]
+    // ]
     const matches = [...processedText.matchAll(diaryPlaceholderRegex)];
+    //me uniquePlaceholders=['{{小雨日记本}}', '{{Alice日记本}}']
     const uniquePlaceholders = [...new Set(matches.map(match => match[0]))];
 
-    // Step 2: Iterate through the unique placeholders and replace them.
+    // 步骤 2：遍历去重后的清单进行替换
+    // 注意：这里遍历的是 uniquePlaceholders 这个固定的数组，而不是在 processedText 上做 while 循环查找。
     for (const placeholder of uniquePlaceholders) {
-        // Extract character name from placeholder like "{{小雨日记本}}" -> "小雨"
+        // Extract character name from placeholder like "{{小雨日记本}}" -> "小雨"\
+        //me 拿到你本地文件夹的名字 必须是{{某某日记本}}这样的文件夹名字  卧槽我在agent里面定义的时候必须是某某日记本才能匹配成功
+        //!!比如{{jack日记本}}
+        //!!只需要agent里面提示词 有{{Nova日记本}} 并创建了对应的{{Nova日记本}}这样的文件夹就行了
+        //?文件夹的名字必须是 Nova，而不能是 Nova日记本。
+        //@characterNameMatch =[
+        //         "{{可可日记本}}", // 第 0 项：完整的匹配结果
+        //             "可可",          // 第 1 项：捕获组 (.+?) 提取出的内容
+        //             index: 0,
+        //                 input: "{{可可日记本}}",
+        //                     groups: undefined
+        // ]
         const characterNameMatch = placeholder.match(/\{\{(.+?)日记本\}\}/);
+
+
         if (characterNameMatch && characterNameMatch[1]) {
+            //me characterName 就是 可可 这样的名字
             const characterName = characterNameMatch[1];
+            // 准备替换内容，默认是空提示
             let diaryContent = `[${characterName}日记本内容为空或未从插件获取]`;
+
+            // 如果总账本里有这个人的日记，就取出来
             if (allDiariesData.hasOwnProperty(characterName)) {
                 diaryContent = allDiariesData[characterName];
             }

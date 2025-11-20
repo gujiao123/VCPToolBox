@@ -322,7 +322,9 @@ async function processTagsInContent(contentText) {
 
 
 // --- Core Diary Writing Logic ---
+//!!开始创建日记
 async function writeDiary(maidName, dateString, contentText) {
+    //!!maidName = "[标签]姓名"
     debugLog(`Processing diary write for Maid: ${maidName}, Date: ${dateString}`);
     if (!maidName || !dateString || !contentText) {
         throw new Error('Invalid input: Missing Maid, Date, or Content.');
@@ -343,6 +345,7 @@ async function writeDiary(maidName, dateString, contentText) {
     const tagMatch = trimmedMaidName.match(/^\[(.*?)\](.*)$/);
 
     if (tagMatch) {
+        //!!这里拿出来 文件夹的名字是标签，真正的女仆名字是后面的名字
         folderName = tagMatch[1].trim(); // Use the captured tag as folder name
         actualMaidName = tagMatch[2].trim(); // Use the captured name as actual maid name
         debugLog(`Tagged note detected. Tag: ${folderName}, Actual Maid: ${actualMaidName}`);
