@@ -26,7 +26,7 @@ const crypto = require('crypto');
 const agentManager = require('./modules/agentManager.js'); // 新增：Agent管理器
 const tvsManager = require('./modules/tvsManager.js'); // 新增：TVS管理器
 const messageProcessor = require('./modules/messageProcessor.js');
-const { VectorDBManager } = require('./VectorDBManager.js'); // 新增：引入向量数据库管理器
+const knowledgeBaseManager = require('./KnowledgeBaseManager.js'); // 新增：引入统一知识库管理器
 const pluginManager = require('./Plugin.js');
 const taskScheduler = require('./routes/taskScheduler.js');
 const webSocketServer = require('./WebSocketServer.js'); // 新增 WebSocketServer 引入
@@ -153,7 +153,6 @@ for (const key in process.env) {
 if (superDetectors.length > 0) console.log(`共加载了 ${superDetectors.length} 条全局上下文转换规则。`);
 else console.log('未加载任何全局上下文转换规则。');
 
-const vectorDBManager = new VectorDBManager(); // 新增：创建 VectorDBManager 实例
 
 const app = express();
 app.use(cors({ origin: '*' })); // 启用 CORS，允许所有来源的跨域请求，方便本地文件调试
@@ -579,6 +578,15 @@ app.post('/v1/interrupt', (req, res) => {
                     } catch (e) {
                         console.error(`[Interrupt] Error closing response for ${id}:`, e.message);
                         // 即使写入失败也不要崩溃，只记录错误
+                        // 尝试强制关闭连接以防止挂起
+                        try {
+                            if (context.res && !context.res.destroyed) {
+                                context.res.destroy();
+                                console.log(`[Interrupt] Forcefully destroyed response for ${id}`);
+                            }
+                        } catch (destroyError) {
+                            console.error(`[Interrupt] Error destroying response for ${id}:`, destroyError.message);
+                        }
                     }
                 } else {
                     console.log(`[Interrupt] Response for ${id} already closed or destroyed.`);
@@ -587,6 +595,14 @@ app.post('/v1/interrupt', (req, res) => {
         } else {
             console.log(`[Interrupt] Request ${id} already aborted, skipping duplicate abort.`);
         }
+        
+        // 最后从 activeRequests 中移除，防止内存泄漏
+        setTimeout(() => {
+            if (activeRequests.has(id)) {
+                activeRequests.delete(id);
+                console.log(`[Interrupt] Cleaned up request ${id} from activeRequests`);
+            }
+        }, 1000); // 延迟1秒删除，确保所有异步操作完成
         
         // 向中断请求的发起者返回成功响应
         res.status(200).json({ status: 'success', message: `Interrupt signal sent for request ${id}.` });
@@ -620,13 +636,31 @@ const chatCompletionHandler = new ChatCompletionHandler({
 });
 
 // Route for standard chat completions. VCP info is shown based on the .env config.
-app.post('/v1/chat/completions', (req, res) => {
-    chatCompletionHandler.handle(req, res, false);
+app.post('/v1/chat/completions', async (req, res) => {
+    try {
+        await chatCompletionHandler.handle(req, res, false);
+    } catch (e) {
+        console.error(`[FATAL] Uncaught exception from chatCompletionHandler for ${req.path}:`, e);
+        if (!res.headersSent) {
+            res.status(500).json({ error: "A fatal internal error occurred." });
+        } else if (!res.writableEnded) {
+            res.end();
+        }
+    }
 });
 
 // Route to force VCP info to be shown, regardless of the .env config.
-app.post('/v1/chatvcp/completions', (req, res) => {
-    chatCompletionHandler.handle(req, res, true);
+app.post('/v1/chatvcp/completions', async (req, res) => {
+    try {
+        await chatCompletionHandler.handle(req, res, true);
+    } catch (e) {
+        console.error(`[FATAL] Uncaught exception from chatCompletionHandler for ${req.path}:`, e);
+        if (!res.headersSent) {
+            res.status(500).json({ error: "A fatal internal error occurred." });
+        } else if (!res.writableEnded) {
+            res.end();
+        }
+    }
 });
 
 // 新增：人类直接调用工具的端点
@@ -823,7 +857,7 @@ const adminPanelRoutes = require('./routes/adminPanelRoutes')(
     dailyNoteRootPath,
     pluginManager,
     logger.getServerLogPath, // Pass the getter function
-    vectorDBManager // Pass the vectorDBManager instance
+    knowledgeBaseManager // Pass the knowledgeBaseManager instance
 );
 
 // 新增：引入 VCP 论坛 API 路由
@@ -891,11 +925,11 @@ app.post('/plugin-callback/:pluginName/:taskId', async (req, res) => {
 
 async function initialize() {
     console.log('开始初始化向量数据库...');
-    await vectorDBManager.initialize(); // 在加载插件之前启动，确保服务就绪
+    await knowledgeBaseManager.initialize(); // 在加载插件之前启动，确保服务就绪
     console.log('向量数据库初始化完成。');
 
     pluginManager.setProjectBasePath(__dirname);
-    pluginManager.setVectorDBManager(vectorDBManager); // 修复：注入 vectorDBManager，避免重复创建
+    pluginManager.setVectorDBManager(knowledgeBaseManager); // 注入 knowledgeBaseManager
     
     console.log('开始加载插件...');
     await pluginManager.loadPlugins();
@@ -918,7 +952,7 @@ async function initialize() {
     // 在所有服务都初始化完毕后，再执行依赖注入，确保 VCPLog 等服务已准备就绪。
     try {
         const dependencies = {
-            vectorDBManager,
+            knowledgeBaseManager,
             vcpLogFunctions: pluginManager.getVCPLogFunctions()
         };
         if (DEBUG_MODE) console.log('[Server] Injecting dependencies into plugins...');
@@ -1067,6 +1101,45 @@ async function gracefulShutdown() {
 
 process.on('SIGINT', gracefulShutdown);
 process.on('SIGTERM', gracefulShutdown);
+
+// 新增：捕获未处理的异常，防止服务器崩溃
+process.on('uncaughtException', (error) => {
+    console.error('[CRITICAL] Uncaught Exception detected:', error.message);
+    console.error('[CRITICAL] Stack trace:', error.stack);
+    
+    // 记录到日志文件
+    const serverLogWriteStream = logger.getLogWriteStream();
+    if (serverLogWriteStream && !serverLogWriteStream.destroyed) {
+        try {
+            serverLogWriteStream.write(
+                `[${dayjs().tz(DEFAULT_TIMEZONE).format('YYYY-MM-DD HH:mm:ss Z')}] [CRITICAL] Uncaught Exception: ${error.message}\n${error.stack}\n`
+            );
+        } catch (e) {
+            console.error('[CRITICAL] Failed to write exception to log:', e.message);
+        }
+    }
+    
+    // 不要立即退出，让服务器继续运行
+    console.log('[CRITICAL] Server will continue running despite the exception.');
+});
+
+// 新增：捕获未处理的 Promise 拒绝
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[WARNING] Unhandled Promise Rejection at:', promise);
+    console.error('[WARNING] Reason:', reason);
+    
+    // 记录到日志文件
+    const serverLogWriteStream = logger.getLogWriteStream();
+    if (serverLogWriteStream && !serverLogWriteStream.destroyed) {
+        try {
+            serverLogWriteStream.write(
+                `[${dayjs().tz(DEFAULT_TIMEZONE).format('YYYY-MM-DD HH:mm:ss Z')}] [WARNING] Unhandled Promise Rejection: ${reason}\n`
+            );
+        } catch (e) {
+            console.error('[WARNING] Failed to write rejection to log:', e.message);
+        }
+    }
+});
 
 // Ensure log stream is flushed on uncaught exceptions or synchronous exit, though less reliable
 process.on('exit', (code) => {

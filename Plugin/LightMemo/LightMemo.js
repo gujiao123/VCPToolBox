@@ -389,91 +389,82 @@ class LightMemoPlugin {
     /**
      * 改用jieba分词（保留词组）
      */
-
- /* 使用 jieba 分词（保留词组）
- */
-_tokenize(text) {
-    if (!text) return [];
-    
-    // ✅ 使用实例调用 cut 方法
-    // 参数说明：
-    // - text: 要分词的文本
-    // - false: 不使用 HMM（隐藏马尔可夫模型），使用精确模式
-    if (!this.jiebaInstance) {
-        console.warn('[LightMemo] Jieba not initialized, falling back to simple split.');
-        // 降级方案：简单分词
-        return text.split(/\s+/)
+    _tokenize(text) {
+        if (!text) return [];
+        
+        // ✅ 使用实例调用 cut 方法
+        // 参数说明：
+        // - text: 要分词的文本
+        // - false: 不使用 HMM（隐藏马尔可夫模型），使用精确模式
+        if (!this.jiebaInstance) {
+            console.warn('[LightMemo] Jieba not initialized, falling back to simple split.');
+            // 降级方案：简单分词
+            return text.split(/\s+/)
+                .map(w => w.toLowerCase().trim())
+                .filter(w => w.length >= 2)
+                .filter(w => !this.stopWords.has(w));
+        }
+        
+        const words = this.jiebaInstance.cut(text, false);  // 精确模式
+        
+        return words
             .map(w => w.toLowerCase().trim())
             .filter(w => w.length >= 2)
-            .filter(w => !this.stopWords.has(w));
+            .filter(w => !this.stopWords.has(w))
+            .filter(w => w.length > 0);
     }
-    
-    const words = this.jiebaInstance.cut(text, false);  // 精确模式
-    
-    return words
-        .map(w => w.toLowerCase().trim())
-        .filter(w => w.length >= 2)
-        .filter(w => !this.stopWords.has(w))
-        .filter(w => w.length > 0);
-}
     /**
      * 从所有相关日记本中收集chunks（带署名过滤）
+     * 适配 KnowledgeBaseManager (SQLite)
      */
     async _gatherCandidateChunks(maid, searchAll) {
-        let allDiaries = [];
-        try {
-            allDiaries = await fs.readdir(this.dailyNoteRootPath, { withFileTypes: true });
-        } catch (error) {
-            console.error('[LightMemo] Failed to read diary root:', error);
+        const db = this.vectorDBManager.db;
+        if (!db) {
+            console.error('[LightMemo] Database not initialized in KnowledgeBaseManager.');
             return [];
         }
 
-        const availableDiaries = allDiaries
-            .filter(dirent => dirent.isDirectory())
-            .map(dirent => dirent.name)
-            .filter(name => {
-                if (name.startsWith('已整理') || name.endsWith('簇')) return false;
-                if (this.excludedFolders.includes(name)) return false;
-                return true;
-            });
-
-        // 如果不是搜索全部，只搜包含maid名字的日记本
-        const targetDiaries = searchAll
-            ? availableDiaries
-            : availableDiaries.filter(name => name.includes(maid));
-
         const candidates = [];
-
-        for (const diaryName of targetDiaries) {
-            // 从VectorDBManager获取这个日记本的chunkMap
-            if (!this.vectorDBManager.chunkMaps.has(diaryName)) {
-                // 尝试加载索引
-                await this.vectorDBManager.loadIndexForSearch(diaryName);
-            }
-
-            const chunkMap = this.vectorDBManager.chunkMaps.get(diaryName);
-            if (!chunkMap) continue;
-
-            // 遍历所有chunks
-            for (const [label, data] of Object.entries(chunkMap)) {
-                const text = data.text || '';
+        
+        try {
+            // 联表查询：chunks + files
+            const sql = `
+                SELECT c.id, c.content, f.diary_name, f.path
+                FROM chunks c
+                JOIN files f ON c.file_id = f.id
+            `;
+            
+            const stmt = db.prepare(sql);
+            
+            // 流式遍历所有 chunks
+            for (const row of stmt.iterate()) {
+                const diaryName = row.diary_name;
                 
-                // 署名过滤：检查chunk内容是否包含署名
-                if (!searchAll && !this._checkSignature(text, maid)) {
-                    continue;  // 跳过不属于这个agent的chunk
-                }
-
-                // 分词
+                // 1. 文件夹/日记本过滤
+                if (diaryName.startsWith('已整理') || diaryName.endsWith('簇')) continue;
+                if (this.excludedFolders.includes(diaryName)) continue;
+                
+                // 2. 目标日记本过滤 (如果不是搜索全部)
+                if (!searchAll && !diaryName.includes(maid)) continue;
+                
+                const text = row.content || '';
+                
+                // 3. 署名过滤 (如果不是搜索全部)
+                if (!searchAll && !this._checkSignature(text, maid)) continue;
+                
+                // 4. 分词
                 const tokens = this._tokenize(text);
                 
                 candidates.push({
                     dbName: diaryName,
-                    label: parseInt(label),
+                    label: row.id, // 使用 chunk.id 作为 label
                     text: text,
                     tokens: tokens,
-                    sourceFile: data.sourceFile
+                    sourceFile: row.path
                 });
             }
+        } catch (error) {
+            console.error('[LightMemo] Error gathering chunks from DB:', error);
         }
 
         return candidates;
@@ -494,17 +485,25 @@ _tokenize(text) {
 
     /**
      * 为候选chunks计算向量相似度
+     * 适配 KnowledgeBaseManager (SQLite)
      */
     async _scoreByVectorSimilarity(candidates, queryVector) {
+        const db = this.vectorDBManager.db;
+        if (!db) return [];
+
         const scored = [];
+        const stmt = db.prepare('SELECT vector FROM chunks WHERE id = ?');
+        const dim = this.vectorDBManager.config.dimension;
 
         for (const candidate of candidates) {
-            // 从VectorDBManager获取这个chunk的向量
-            const index = this.vectorDBManager.indices.get(candidate.dbName);
-            if (!index) continue;
-
             try {
-                const chunkVector = index.getPoint(candidate.label);
+                const row = stmt.get(candidate.label); // label is chunk.id
+                if (!row || !row.vector) continue;
+
+                // 转换 BLOB 为 Float32Array
+                // 注意：Buffer 是 Node.js 的 Buffer，可以直接作为 ArrayBuffer 使用，但需要注意 offset
+                const chunkVector = new Float32Array(row.vector.buffer, row.vector.byteOffset, dim);
+                
                 const similarity = this._cosineSimilarity(queryVector, chunkVector);
                 
                 scored.push({
@@ -512,7 +511,7 @@ _tokenize(text) {
                     vectorScore: similarity
                 });
             } catch (error) {
-                // chunk可能已被删除，跳过
+                console.warn(`[LightMemo] Error calculating similarity for chunk ${candidate.label}:`, error.message);
                 continue;
             }
         }

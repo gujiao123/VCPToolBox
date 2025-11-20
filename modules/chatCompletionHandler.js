@@ -308,10 +308,21 @@ class ChatCompletionHandler {
               },
             ],
           };
-          res.write(`data: ${JSON.stringify(errorPayload)}\n\n`);
-          res.write('data: [DONE]\n\n', () => {
-            res.end();
-          });
+          try {
+            res.write(`data: ${JSON.stringify(errorPayload)}\n\n`);
+            res.write('data: [DONE]\n\n', () => {
+              res.end();
+            });
+          } catch (writeError) {
+            console.error('[Upstream Error] Failed to write error to stream:', writeError.message);
+            if (!res.writableEnded) {
+              try {
+                res.end();
+              } catch (endError) {
+                console.error('[Upstream Error] Failed to end response:', endError.message);
+              }
+            }
+          }
 
           // We are done with this request. Return early.
           return;
@@ -628,10 +639,21 @@ class ChatCompletionHandler {
                   },
                 ],
               };
-              res.write(`data: ${JSON.stringify(finalChunkPayload)}\n\n`);
-              res.write('data: [DONE]\n\n', () => {
-                res.end();
-              });
+              try {
+                res.write(`data: ${JSON.stringify(finalChunkPayload)}\n\n`);
+                res.write('data: [DONE]\n\n', () => {
+                  res.end();
+                });
+              } catch (writeError) {
+                console.error('[VCP Stream Loop] Failed to write final chunk:', writeError.message);
+                if (!res.writableEnded && !res.destroyed) {
+                  try {
+                    res.end();
+                  } catch (endError) {
+                    console.error('[VCP Stream Loop] Failed to end response:', endError.message);
+                  }
+                }
+              }
             }
             break;
           }
@@ -737,10 +759,21 @@ class ChatCompletionHandler {
                 model: originalBody.model,
                 choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
               };
-              res.write(`data: ${JSON.stringify(finalChunkPayload)}\n\n`);
-              res.write('data: [DONE]\n\n', () => {
-                res.end();
-              });
+              try {
+                res.write(`data: ${JSON.stringify(finalChunkPayload)}\n\n`);
+                res.write('data: [DONE]\n\n', () => {
+                  res.end();
+                });
+              } catch (writeError) {
+                console.error('[VCP Stream Loop Archery] Failed to write final chunk:', writeError.message);
+                if (!res.writableEnded && !res.destroyed) {
+                  try {
+                    res.end();
+                  } catch (endError) {
+                    console.error('[VCP Stream Loop Archery] Failed to end response:', endError.message);
+                  }
+                }
+              }
             }
             break; // Exit the VCP loop
           }
@@ -964,9 +997,11 @@ class ChatCompletionHandler {
               body: JSON.stringify({ ...originalBody, messages: currentMessagesForLoop, stream: true }),
               signal: abortController.signal, // 传递中止信号
             },
-            apiRetries,
-            apiRetryDelay,
-            DEBUG_MODE,
+            {
+              retries: apiRetries,
+              delay: apiRetryDelay,
+              debugMode: DEBUG_MODE
+            }
           );
 
           if (!nextAiAPIResponse.ok) {
@@ -1018,10 +1053,21 @@ class ChatCompletionHandler {
               },
             ],
           };
-          res.write(`data: ${JSON.stringify(finalChunkPayload)}\n\n`);
-          res.write('data: [DONE]\n\n', () => {
-            res.end();
-          });
+          try {
+            res.write(`data: ${JSON.stringify(finalChunkPayload)}\n\n`);
+            res.write('data: [DONE]\n\n', () => {
+              res.end();
+            });
+          } catch (writeError) {
+            console.error('[VCP Stream Loop Max Recursion] Failed to write final chunk:', writeError.message);
+            if (!res.writableEnded && !res.destroyed) {
+              try {
+                res.end();
+              } catch (endError) {
+                console.error('[VCP Stream Loop Max Recursion] Failed to end response:', endError.message);
+              }
+            }
+          }
         }
       } else {
         // Non-streaming (originalBody.stream === false)
@@ -1451,9 +1497,11 @@ class ChatCompletionHandler {
                 body: JSON.stringify({ ...originalBody, messages: currentMessagesForNonStreamLoop, stream: false }),
                 signal: abortController.signal, // 传递中止信号
               },
-              apiRetries,
-              apiRetryDelay,
-              DEBUG_MODE,
+              {
+                retries: apiRetries,
+                delay: apiRetryDelay,
+                debugMode: DEBUG_MODE
+              }
             );
 
             if (!recursionAiResponse.ok) {
@@ -1528,8 +1576,19 @@ class ChatCompletionHandler {
           };
         }
 
-        if (!res.writableEnded) {
-          res.send(Buffer.from(JSON.stringify(finalJsonResponse)));
+        if (!res.writableEnded && !res.destroyed) {
+          try {
+            res.send(Buffer.from(JSON.stringify(finalJsonResponse)));
+          } catch (sendError) {
+            console.error('[Non-Stream Response] Failed to send final response:', sendError.message);
+            if (!res.writableEnded && !res.destroyed) {
+              try {
+                res.end();
+              } catch (endError) {
+                console.error('[Non-Stream Response] Failed to end response:', endError.message);
+              }
+            }
+          }
         }
         // Handle diary for the *first* AI response in non-streaming mode
         await handleDiaryFromAIResponse(firstResponseRawDataForClientAndDiary);
@@ -1568,46 +1627,53 @@ class ChatCompletionHandler {
           // 这里等待一小段时间，让中断路由有机会处理
           console.log(`[Abort] Headers not sent yet. Waiting for interrupt handler...`);
           setTimeout(() => {
-            // 再次检查响应状态
-            if (res.writableEnded || res.destroyed) {
-              console.log(`[Abort] Response was closed by interrupt handler during wait.`);
-              return;
-            }
-            
-            if (!res.headersSent) {
-              // 中断路由没有处理，我们来处理
-              console.log(`[Abort] Interrupt handler didn't process. Handling abort here.`);
-              if (isOriginalRequestStreaming) {
-                // 流式请求
-                res.status(200);
-                res.setHeader('Content-Type', 'text/event-stream');
-                res.setHeader('Cache-Control', 'no-cache');
-                res.setHeader('Connection', 'keep-alive');
-                
-                const abortChunk = {
-                  id: `chatcmpl-abort-${Date.now()}`,
-                  object: 'chat.completion.chunk',
-                  created: Math.floor(Date.now() / 1000),
-                  model: originalBody.model || 'unknown',
-                  choices: [{
-                    index: 0,
-                    delta: { content: '请求已被用户中止' },
-                    finish_reason: 'stop'
-                  }]
-                };
-                res.write(`data: ${JSON.stringify(abortChunk)}\n\n`);
-                res.write('data: [DONE]\n\n');
-                res.end();
-              } else {
-                // 非流式请求
-                res.status(200).json({
-                  choices: [{
-                    index: 0,
-                    message: { role: 'assistant', content: '请求已被用户中止' },
-                    finish_reason: 'stop',
-                  }],
-                });
+            try {
+              // 再次检查响应状态
+              if (res.writableEnded || res.destroyed) {
+                console.log(`[Abort] Response was closed by interrupt handler during wait.`);
+                return;
               }
+              
+              if (!res.headersSent) {
+                // 中断路由没有处理，我们来处理
+                console.log(`[Abort] Interrupt handler didn't process. Handling abort here.`);
+                if (isOriginalRequestStreaming) {
+                  // 流式请求
+                  res.status(200);
+                  res.setHeader('Content-Type', 'text/event-stream');
+                  res.setHeader('Cache-Control', 'no-cache');
+                  res.setHeader('Connection', 'keep-alive');
+                  
+                  const abortChunk = {
+                    id: `chatcmpl-abort-${Date.now()}`,
+                    object: 'chat.completion.chunk',
+                    created: Math.floor(Date.now() / 1000),
+                    model: originalBody.model || 'unknown',
+                    choices: [{
+                      index: 0,
+                      delta: { content: '请求已被用户中止' },
+                      finish_reason: 'stop'
+                    }]
+                  };
+                  res.write(`data: ${JSON.stringify(abortChunk)}\n\n`);
+                  res.write('data: [DONE]\n\n');
+                  res.end();
+                } else {
+                  // 非流式请求
+                  res.status(200).json({
+                    choices: [{
+                      index: 0,
+                      message: { role: 'assistant', content: '请求已被用户中止' },
+                      finish_reason: 'stop',
+                    }],
+                  });
+                }
+              }
+            } catch (e) {
+                console.error('[Abort] Error within abort handler timeout:', e.message);
+                if (!res.writableEnded) {
+                    try { res.end(); } catch (endErr) { /* ignore */ }
+                }
             }
           }, 50); // 等待50ms让中断路由处理
         }
@@ -1643,10 +1709,21 @@ class ChatCompletionHandler {
               },
             ],
           };
-          res.write(`data: ${JSON.stringify(errorPayload)}\n\n`);
-          res.write('data: [DONE]\n\n', () => {
-            res.end();
-          });
+          try {
+            res.write(`data: ${JSON.stringify(errorPayload)}\n\n`);
+            res.write('data: [DONE]\n\n', () => {
+              res.end();
+            });
+          } catch (writeError) {
+            console.error('[Error Handler Stream] Failed to write error:', writeError.message);
+            if (!res.writableEnded && !res.destroyed) {
+              try {
+                res.end();
+              } catch (endError) {
+                console.error('[Error Handler Stream] Failed to end response:', endError.message);
+              }
+            }
+          }
         } else {
           // Non-streaming failure
           res.status(500).json({ error: 'Internal Server Error', details: error.message });
@@ -1657,9 +1734,20 @@ class ChatCompletionHandler {
           '[STREAM ERROR] Headers already sent. Cannot send JSON error. Ending stream if not already ended.',
         );
         // Send [DONE] marker before ending the stream for graceful termination
-        res.write('data: [DONE]\n\n', () => {
-          res.end();
-        });
+        try {
+          res.write('data: [DONE]\n\n', () => {
+            res.end();
+          });
+        } catch (writeError) {
+          console.error('[Error Handler Stream Cleanup] Failed to write [DONE]:', writeError.message);
+          if (!res.writableEnded && !res.destroyed) {
+            try {
+              res.end();
+            } catch (endError) {
+              console.error('[Error Handler Stream Cleanup] Failed to end response:', endError.message);
+            }
+          }
+        }
       }
     } finally {
       if (id) {

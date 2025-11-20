@@ -8,7 +8,6 @@ const FileFetcherServer = require('./FileFetcherServer.js');
 const express = require('express'); // For plugin API routing
 const chokidar = require('chokidar');
 const { getAuthCode } = require('./modules/captchaDecoder'); // 导入统一的解码函数
-const { VectorDBManager } = require('./VectorDBManager.js');
 
 const PLUGIN_DIR = path.join(__dirname, 'Plugin');
 const manifestFileName = 'plugin-manifest.json';
@@ -134,13 +133,14 @@ class PluginManager {
             let output = '';
             let errorOutput = '';
             let processExited = false;
-            const timeoutDuration = plugin.communication?.timeout || 30000;
+            const timeoutDuration = plugin.communication?.timeout || 60000; // 增加默认超时时间到 1 分钟
 
             const timeoutId = setTimeout(() => {
                 if (!processExited) {
-                    console.error(`[PluginManager] Static plugin "${plugin.name}" execution timed out after ${timeoutDuration}ms.`); // Keep error
+                    console.log(`[PluginManager] Static plugin "${plugin.name}" has completed its work cycle (${timeoutDuration}ms), terminating background process.`);
                     pluginProcess.kill('SIGKILL');
-                    reject(new Error(`Static plugin "${plugin.name}" execution timed out.`));
+                    // 超时不作为错误 - static 插件完成工作周期后返回已收集的输出
+                    resolve(output.trim());
                 }
             }, timeoutDuration);
 
@@ -157,7 +157,8 @@ class PluginManager {
             pluginProcess.on('exit', (code, signal) => {
                 processExited = true;
                 clearTimeout(timeoutId);
-                if (signal === 'SIGKILL') { 
+                if (signal === 'SIGKILL') {
+                    // 被 SIGKILL 终止（超时），已经在 timeout 回调中 resolve 了，这里直接返回
                     return;
                 }
                 if (code !== 0) {

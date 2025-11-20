@@ -970,6 +970,8 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
 
     // --- Agent Files API ---
     const AGENT_MAP_FILE = path.join(__dirname, '..', 'agent_map.json');
+    const AGENT_ASSISTANT_CONFIG_PATH = path.join(__dirname, '..', 'Plugin', 'AgentAssistant', 'config.env');
+    const AGENT_ASSISTANT_EXAMPLE_CONFIG_PATH = path.join(__dirname, '..', 'Plugin', 'AgentAssistant', 'config.env.example');
 
     // GET agent map
     adminApiRouter.get('/agents/map', async (req, res) => {
@@ -1328,6 +1330,323 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             }
         } else {
             res.status(503).json({ success: false, error: 'VectorDBManager is not available.' });
+        }
+    });
+
+    // ========================
+    // AgentAssistant 配置 API
+    // ========================
+
+    /**
+     * 辅助函数：解析 AgentAssistant config.env 中的配置
+     * 返回：{ maxHistoryRounds, contextTtlHours, globalSystemPrompt, agents: [...] }
+     */
+    async function parseAgentAssistantConfig() {
+        let content = '';
+        try {
+            content = await fs.readFile(AGENT_ASSISTANT_CONFIG_PATH, 'utf-8');
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                // 如果正式配置不存在，尝试使用示例作为模板
+                try {
+                    content = await fs.readFile(AGENT_ASSISTANT_EXAMPLE_CONFIG_PATH, 'utf-8');
+                } catch (exampleError) {
+                    // 示例也不存在则返回默认空配置
+                    console.warn('[AdminAPI] AgentAssistant config.env and example config.env not found. Using defaults.');
+                    return {
+                        maxHistoryRounds: 7,
+                        contextTtlHours: 24,
+                        agents: []
+                    };
+                }
+            } else {
+                throw error;
+            }
+        }
+
+        const lines = content.split(/\r?\n/);
+        let maxHistoryRounds = null;
+        let contextTtlHours = null;
+        let globalSystemPrompt = null;
+        const agentsByBaseName = new Map();
+
+        for (const rawLine of lines) {
+            const line = rawLine.trim();
+            if (!line || line.startsWith('#') || !line.includes('=')) continue;
+
+            const eqIndex = line.indexOf('=');
+            const key = line.substring(0, eqIndex).trim();
+            let value = line.substring(eqIndex + 1).trim();
+
+            // 去掉包裹的引号
+            if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+                value = value.substring(1, value.length - 1);
+            }
+
+            // 反转义常见的转义序列
+            const unescapedValue = value
+                .replace(/\\\\/g, '\\')
+                .replace(/\\n/g, '\n')
+                .replace(/\\"/g, '"')
+                .replace(/\\'/g, "'");
+
+            if (key === 'AGENT_ASSISTANT_MAX_HISTORY_ROUNDS') {
+                const parsed = parseInt(unescapedValue, 10);
+                if (!Number.isNaN(parsed)) maxHistoryRounds = parsed;
+                continue;
+            }
+
+            if (key === 'AGENT_ASSISTANT_CONTEXT_TTL_HOURS') {
+                const parsed = parseInt(unescapedValue, 10);
+                if (!Number.isNaN(parsed)) contextTtlHours = parsed;
+                continue;
+            }
+
+            if (key === 'AGENT_ALL_SYSTEM_PROMPT') {
+                globalSystemPrompt = unescapedValue;
+                continue;
+            }
+
+            // 解析 AGENT_{BASENAME}_* 定义
+            if (key.startsWith('AGENT_')) {
+                const match = key.match(/^AGENT_([A-Z0-9_]+)_(MODEL_ID|CHINESE_NAME|SYSTEM_PROMPT|MAX_OUTPUT_TOKENS|TEMPERATURE|DESCRIPTION)$/i);
+                if (!match) continue;
+
+                const baseName = match[1].toUpperCase();
+                const field = match[2];
+
+                if (!agentsByBaseName.has(baseName)) {
+                    agentsByBaseName.set(baseName, {
+                        baseName,
+                        modelId: '',
+                        chineseName: '',
+                        systemPrompt: '',
+                        maxOutputTokens: 40000,
+                        temperature: 0.7,
+                        description: ''
+                    });
+                }
+
+                const agent = agentsByBaseName.get(baseName);
+
+                switch (field) {
+                    case 'MODEL_ID':
+                        agent.modelId = unescapedValue;
+                        break;
+                    case 'CHINESE_NAME':
+                        agent.chineseName = unescapedValue;
+                        break;
+                    case 'SYSTEM_PROMPT':
+                        agent.systemPrompt = unescapedValue;
+                        break;
+                    case 'MAX_OUTPUT_TOKENS': {
+                        const parsedTokens = parseInt(unescapedValue, 10);
+                        if (!Number.isNaN(parsedTokens)) agent.maxOutputTokens = parsedTokens;
+                        break;
+                    }
+                    case 'TEMPERATURE': {
+                        const parsedTemp = parseFloat(unescapedValue);
+                        if (!Number.isNaN(parsedTemp)) agent.temperature = parsedTemp;
+                        break;
+                    }
+                    case 'DESCRIPTION':
+                        agent.description = unescapedValue;
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+
+        const agents = Array.from(agentsByBaseName.values()).filter(agent => agent.chineseName || agent.modelId);
+
+        return {
+            maxHistoryRounds: maxHistoryRounds != null ? maxHistoryRounds : 7,
+            contextTtlHours: contextTtlHours != null ? contextTtlHours : 24,
+            globalSystemPrompt: globalSystemPrompt != null ? globalSystemPrompt : '',
+            agents
+        };
+    }
+
+    function escapeForDoubleQuotes(value) {
+        if (value == null) return '';
+        return String(value)
+            .replace(/\\/g, '\\\\')
+            .replace(/"/g, '\\"')
+            .replace(/\r?\n/g, '\\n');
+    }
+
+    function generateBaseName(chineseName, existingBaseNames) {
+        const used = new Set(existingBaseNames.map(name => name.toUpperCase()));
+        let base = (chineseName || '').normalize('NFKD').replace(/[^\x00-\x7F]/g, '');
+        if (!base) base = 'AGENT';
+        base = base.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+        if (!base) base = 'AGENT';
+        base = base.toUpperCase();
+
+        let candidate = base;
+        let counter = 2;
+        while (used.has(candidate)) {
+            candidate = `${base}_${counter}`;
+            counter += 1;
+        }
+        return candidate;
+    }
+
+    // 获取 AgentAssistant 配置
+    adminApiRouter.get('/agent-assistant/config', async (req, res) => {
+        try {
+            const config = await parseAgentAssistantConfig();
+            res.json(config);
+        } catch (error) {
+            console.error('[AdminAPI] Error reading AgentAssistant config:', error);
+            res.status(500).json({ error: 'Failed to read AgentAssistant config', details: error.message });
+        }
+    });
+
+    // 保存 AgentAssistant 配置
+    adminApiRouter.post('/agent-assistant/config', async (req, res) => {
+        const body = req.body || {};
+        let { maxHistoryRounds, contextTtlHours, globalSystemPrompt, agents } = body;
+
+        if (!Array.isArray(agents)) {
+            return res.status(400).json({ error: 'Invalid request body. Expected { agents: [...] }.' });
+        }
+
+        maxHistoryRounds = parseInt(maxHistoryRounds, 10);
+        if (Number.isNaN(maxHistoryRounds) || maxHistoryRounds <= 0) maxHistoryRounds = 7;
+
+        contextTtlHours = parseInt(contextTtlHours, 10);
+        if (Number.isNaN(contextTtlHours) || contextTtlHours <= 0) contextTtlHours = 24;
+
+        // 轻量校验 agent 配置
+        const normalizedAgents = [];
+        const baseNames = [];
+
+        for (const agent of agents) {
+            if (!agent) continue;
+            const chineseName = (agent.chineseName || '').trim();
+            const modelId = (agent.modelId || '').trim();
+
+            if (!chineseName || !modelId) {
+                // 对于缺少关键字段的条目，直接跳过，不写入配置
+                continue;
+            }
+
+            const baseName = (agent.baseName || '').trim();
+            normalizedAgents.push({
+                baseName,
+                chineseName,
+                modelId,
+                systemPrompt: agent.systemPrompt || '',
+                maxOutputTokens: parseInt(agent.maxOutputTokens, 10) || 40000,
+                temperature: Number.isNaN(parseFloat(agent.temperature))
+                    ? 0.7
+                    : parseFloat(agent.temperature),
+                description: agent.description || ''
+            });
+            if (baseName) baseNames.push(baseName);
+        }
+
+        try {
+            // 读取原始文件内容，用于保留非 AGENT_* 的其他配置与注释
+            let originalLines = [];
+            try {
+                const originalContent = await fs.readFile(AGENT_ASSISTANT_CONFIG_PATH, 'utf-8');
+                originalLines = originalContent.split(/\r?\n/);
+            } catch (error) {
+                if (error.code === 'ENOENT') {
+                    // 如果正式配置不存在，尝试示例以获取注释模板
+                    try {
+                        const exampleContent = await fs.readFile(AGENT_ASSISTANT_EXAMPLE_CONFIG_PATH, 'utf-8');
+                        originalLines = exampleContent.split(/\r?\n/);
+                    } catch (exampleError) {
+                        originalLines = [];
+                    }
+                } else {
+                    throw error;
+                }
+            }
+
+            // 保留所有非 AGENT_ 开头的行（包括注释）
+            const preservedLines = originalLines.filter(line => !line.trim().startsWith('AGENT_'));
+
+            const newLines = [...preservedLines];
+            if (newLines.length > 0 && newLines[newLines.length - 1].trim() !== '') {
+                newLines.push('');
+            }
+
+            newLines.push(`# -------------------------------------------------------------------`);
+            newLines.push(`# [AgentAssistant 基础配置] （由控制中心自动生成）`);
+            newLines.push(`# -------------------------------------------------------------------`);
+            newLines.push(`AGENT_ASSISTANT_MAX_HISTORY_ROUNDS=${maxHistoryRounds}`);
+            newLines.push(`AGENT_ASSISTANT_CONTEXT_TTL_HOURS=${contextTtlHours}`);
+
+            if (globalSystemPrompt && String(globalSystemPrompt).trim() !== '') {
+                newLines.push(
+                    `AGENT_ALL_SYSTEM_PROMPT="${escapeForDoubleQuotes(String(globalSystemPrompt))}"`
+                );
+            }
+
+            newLines.push('');
+
+            if (normalizedAgents.length > 0) {
+                newLines.push(`# -------------------------------------------------------------------`);
+                newLines.push(`# [AgentAssistant 定义的 Agent 列表] （由控制中心自动生成）`);
+                newLines.push(`# 请尽量通过控制中心修改，避免手动编辑造成不一致。`);
+                newLines.push(`# -------------------------------------------------------------------`);
+                newLines.push('');
+
+                const existingBaseNames = normalizedAgents
+                    .map(a => a.baseName)
+                    .filter(Boolean)
+                    .map(name => name.toUpperCase());
+
+                for (const agent of normalizedAgents) {
+                    let baseName = (agent.baseName || '').trim();
+                    if (!baseName) {
+                        baseName = generateBaseName(agent.chineseName, existingBaseNames);
+                        existingBaseNames.push(baseName);
+                    }
+
+                    newLines.push(`# Agent: ${agent.chineseName}`);
+                    newLines.push(`AGENT_${baseName}_MODEL_ID="${escapeForDoubleQuotes(agent.modelId)}"`);
+                    newLines.push(`AGENT_${baseName}_CHINESE_NAME="${escapeForDoubleQuotes(agent.chineseName)}"`);
+                    if (agent.systemPrompt) {
+                        newLines.push(
+                            `AGENT_${baseName}_SYSTEM_PROMPT="${escapeForDoubleQuotes(agent.systemPrompt)}"`
+                        );
+                    }
+                    if (agent.maxOutputTokens) {
+                        newLines.push(`AGENT_${baseName}_MAX_OUTPUT_TOKENS=${agent.maxOutputTokens}`);
+                    }
+                    if (typeof agent.temperature === 'number') {
+                        newLines.push(`AGENT_${baseName}_TEMPERATURE=${agent.temperature}`);
+                    }
+                    if (agent.description) {
+                        newLines.push(
+                            `AGENT_${baseName}_DESCRIPTION="${escapeForDoubleQuotes(agent.description)}"`
+                        );
+                    }
+                    newLines.push('');
+                }
+            }
+
+            const finalContent = newLines.join('\n');
+            await fs.writeFile(AGENT_ASSISTANT_CONFIG_PATH, finalContent, 'utf-8');
+
+            // 重新加载插件，使新的 Agent 配置生效
+            try {
+                await pluginManager.loadPlugins();
+            } catch (reloadError) {
+                console.error('[AdminAPI] Error reloading plugins after AgentAssistant config save:', reloadError);
+                // 即使重载失败，配置文件也已经更新，前端仍然认为保存成功
+            }
+
+            res.json({ message: 'AgentAssistant 配置已保存。' });
+        } catch (error) {
+            console.error('[AdminAPI] Error writing AgentAssistant config:', error);
+            res.status(500).json({ error: 'Failed to write AgentAssistant config', details: error.message });
         }
     });
 
