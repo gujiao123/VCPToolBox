@@ -95,6 +95,12 @@ fate_check_number: 「始」number「末」, // 可选字段，作为占卜师�
 凯尔特十字牌阵占卜：command: 「始」draw_celtic_cross「末」
 使用div元素构建一个“牌桌”来展现命运检定的数字，在占卜工具返回结果后，在牌桌上展示卡牌，并为卡牌添加一定的交互效果。
 
+
+
+
+
+
+
 三.VCP通讯插件
 1.Agent通讯器，用于联络别的Agent！
 tool_name:「始」AgentAssistant「末」,

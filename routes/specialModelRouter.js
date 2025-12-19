@@ -1,4 +1,8 @@
 // routes/specialModelRouter.js
+
+
+// 该模块通过维护两个白名单列表（图像模型和嵌入模型）来识别特殊模型，并在检测到请求模型匹配白名单时，劫持请求并执行特定的转发操作。
+//1. 初始化与配置加载
 const express = require('express');
 const dotenv = require('dotenv');
 
@@ -9,6 +13,8 @@ const API_URL = process.env.API_URL;
 const API_KEY = process.env.API_Key;
 const DEBUG_MODE = (process.env.DebugMode || "False").toLowerCase() === "true";
 
+
+// 从环境变量加载白名单
 const WHITELIST_IMAGE_MODELS = (process.env.WhitelistImageModel || '').split(',').map(m => m.trim()).filter(Boolean);
 const WHITELIST_EMBEDDING_MODELS = (process.env.WhitelistEmbeddingModel || '').split(',').map(m => m.trim()).filter(Boolean);
 
@@ -19,9 +25,10 @@ if (WHITELIST_EMBEDDING_MODELS.length > 0) {
     console.log(`[SpecialRouter] 加载了 ${WHITELIST_EMBEDDING_MODELS.length} 个向量化白名单模型: ${WHITELIST_EMBEDDING_MODELS.join(', ')}`);
 }
 
-
+//2. 中间件：请求拦截与分流
 // 中间件，用于检查请求是否适用于此特殊路由
 router.use((req, res, next) => {
+    // 1. 过滤无效请求：非 POST 或无 Body 的请求直接跳过（交给下一个路由处理）
     // 对于非 POST 请求或没有请求体的请求，立即跳过此路由。
     // 这可以防止对管理面板的 GET 请求等造成崩溃。
     if (req.method !== 'POST' || !req.body) {
@@ -46,30 +53,37 @@ router.use((req, res, next) => {
     return next('router');
 });
 
-
+//3. 图像模型处理 (/v1/chat/completions)
 // 处理图像模型
 router.post('/v1/chat/completions', async (req, res) => {
     const model = req.body.model;
-
+    // 双重检查：虽然中间件过滤过了，但这里再次确认模型是否在图像白名单中
     if (!WHITELIST_IMAGE_MODELS.includes(model)) {
         // 理论上不会进入这里，因为上面的 use 中间件已经过滤了
         return res.status(400).json({ error: "模型不匹配图像模型白名单" });
     }
 
     if (DEBUG_MODE) console.log(`[SpecialRouter] 正在处理图像模型: ${model}`);
-    
+
     // 图像模型需要特殊的 generationConfig
     const modifiedBody = {
         ...req.body,
         generationConfig: {
             ...req.body.generationConfig,
+            // 强制注入 Google Gemini 所需的特殊参数
             responseModalities: ["TEXT", "IMAGE"],
             responseMimeType: "text/plain",
         }
     };
 
     try {
+        // 1. 发起请求
+        // 这里的 await 就像我们之前讲的：
+        // VCP 给谷歌发了请求后，当前这个函数就【暂停】了。
+        // VCP 就在这儿一直等，等到谷歌把结果传回来为止。
+        // 直接转发请求给上游 API
         const { default: fetch } = await import('node-fetch');
+        // 把那个“加了料”的请求发出去
         const apiResponse = await fetch(`${API_URL}/v1/chat/completions`, {
             method: 'POST',
             headers: {
@@ -80,11 +94,16 @@ router.post('/v1/chat/completions', async (req, res) => {
             },
             body: JSON.stringify(modifiedBody),
         });
-
+        // 2. 谷歌终于传回结果了（生图完成了），代码才继续往下走
         // 对于非流式JSON API，更稳妥的方式是完整接收后用 res.json() 返回
-        const responseJson = await apiResponse.json();
+        const responseJson = await apiResponse.json();// 拿到谷歌的回信
         // 同样，客户端可能只期望得到核心的 candidates 数组
+        //第四步：清洗回信 (Res.json)
+        // 2. 提取核心内容（candidates）
+        // 谷歌 Gemini 的生图结果通常藏在 candidates 数组里，里面包含图片的 URL 或者 Base64 数据。
         if (responseJson && responseJson.candidates) {
+            // 3. 【关键时刻】直接发给客户端
+            // 此时此刻，VCP 任务结束。它把包含图片数据的 JSON 直接扔给了酒馆。
             res.status(apiResponse.status).json(responseJson.candidates);
         } else {
             res.status(apiResponse.status).json(responseJson);
@@ -102,7 +121,8 @@ router.post('/v1/chat/completions', async (req, res) => {
 // 处理向量化模型
 router.post('/v1/embeddings', async (req, res) => {
     const model = req.body.model;
-
+    // 门卫大爷：你找谁？
+    // 只有白名单里的人（比如 text-embedding-3-small）才允许通过
     if (!WHITELIST_EMBEDDING_MODELS.includes(model)) {
         return res.status(400).json({ error: "模型不匹配向量化模型白名单" });
     }
@@ -119,11 +139,16 @@ router.post('/v1/embeddings', async (req, res) => {
                 ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
                 'Accept': req.headers['accept'] || 'application/json',
             },
+            // ...
+            // 【关键】直接把用户说的话原封不动地传过去！
+            // 画图路由那里是 JSON.stringify(modifiedBody) —— 改过的
+            // 这里是 JSON.stringify(req.body) —— 原装的
             body: JSON.stringify(req.body),
         });
 
         const responseJson = await apiResponse.json();
         // 直接将从上游API收到的完整JSON响应转发给客户端，实现真正的“透传”
+        // 拿到 OpenAI 返回的一大串数字（向量），直接扔回给客户端
         res.status(apiResponse.status).json(responseJson);
 
     } catch (error) {

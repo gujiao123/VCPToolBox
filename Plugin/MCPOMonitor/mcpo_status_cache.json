@@ -1,5 +1,5 @@
 {
-  "timestamp": "2025-11-18T15:29:52.751Z",
+  "timestamp": "2025-11-27T04:24:50.085Z",
   "health": {
     "serverRunning": false,
     "serverVersion": null,
@@ -14,7 +14,7 @@
       }
     },
     "availableServices": [],
-    "lastChecked": "2025-11-18T15:29:52.706Z"
+    "lastChecked": "2025-11-27T04:24:50.040Z"
   },
   "tools": {
     "success": false,
@@ -28,5 +28,5 @@
   },
   "isRealTime": true,
   "checkInterval": "实时检测 (0  */5 * * * *)",
-  "lastUpdate": "2025/11/18 23:29:52"
+  "lastUpdate": "2025/11/27 12:24:50"
 }
