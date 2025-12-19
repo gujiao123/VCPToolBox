@@ -34,7 +34,8 @@ class KnowledgeBaseManager {
             
             batchWindow: 2000,
             maxBatchSize: 50,
-            indexSaveDelay: 60000,
+            indexSaveDelay: 120000, // 日记索引的保存延迟 (2分钟)
+            tagIndexSaveDelay: 300000, // 全局Tag索引的保存延迟 (5分钟)
             
             ignoreFolders: (process.env.IGNORE_FOLDERS || 'VCP论坛').split(',').map(f => f.trim()).filter(Boolean),
             ignorePrefixes: (process.env.IGNORE_PREFIX || '已整理').split(',').map(p => p.trim()).filter(Boolean),
@@ -412,6 +413,15 @@ class KnowledgeBaseManager {
                 return { vector: vector, info: null };
             }
 
+            // [步骤 2.5] 动态计算 Tag Boost 指数 (Alpha)
+            const avgScore = tagResults.reduce((sum, r) => sum + r.score, 0) / tagResults.length;
+            // 映射范围: [0, 1] -> [1.5, 3.5] (并添加边界限制，防止极端值)
+            const dynamicAlpha = Math.min(3.5, Math.max(1.5, 1.5 + 2.0 * avgScore));
+            // 动态 Beta: 模糊查询时 (avgScore低) 提高降噪常数，宽容高频词
+            const dynamicBeta = 2 + (1 - avgScore) * 3;
+            
+            if(debug) console.log(`[TagMemo] ℹ️ Avg Tag Score: ${avgScore.toFixed(3)}, Alpha: ${dynamicAlpha.toFixed(3)}, Beta: ${dynamicBeta.toFixed(3)}`);
+
             const tagIds = tagResults.map(r => r.id);
             const placeholders = tagIds.map(() => '?').join(',');
 
@@ -474,11 +484,11 @@ class KnowledgeBaseManager {
                 const v = new Float32Array(t.vector.buffer, t.vector.byteOffset, dim);
                 
                 // 💡 核心算法：指数级毛刺增强 + 对数级降噪
-                // 1. 基础强度：共现次数的 2.5 次方
-                let logicStrength = Math.pow(t.co_weight || 1, 2.5);
+                // 1. 基础强度：共现次数的 Alpha 次方 (动态增强)
+                let logicStrength = Math.pow(t.co_weight || 1, dynamicAlpha);
                 
-                // 2. 降噪因子：全局频率的对数
-                let noisePenalty = Math.log((t.global_freq || 1) + 2);
+                // 2. 降噪因子：全局频率的对数 (动态 Beta 降噪)
+                let noisePenalty = Math.log((t.global_freq || 1) + dynamicBeta);
                 
                 // 3. 最终得分
                 let score = logicStrength / noisePenalty;
@@ -543,10 +553,21 @@ class KnowledgeBaseManager {
         }
     }
 
+    /**
+     * 公共接口：应用 TagMemo 增强向量
+     * @param {Float32Array|Array<number>} vector - 原始查询向量
+     * @param {number} tagBoost - 增强因子 (0 到 1)
+     * @returns {{vector: Float32Array, info: object|null}} - 返回增强后的向量和调试信息
+     */
+    applyTagBoost(vector, tagBoost) {
+        // 包装私有方法，提供稳定的公共接口
+        return this._applyTagBoost(vector, tagBoost);
+    }
+ 
     // =========================================================================
     // 兼容性 API (修复版)
     // =========================================================================
-
+ 
     // 🛠️ 修复 3: 同步回退 + 缓存预热
     async getDiaryNameVector(diaryName) {
         if (!diaryName) return null;
@@ -925,7 +946,12 @@ class KnowledgeBaseManager {
     
     _prepareTextForEmbedding(text) {
         const decorativeEmojis = /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu;
-        let cleaned = text.replace(decorativeEmojis, ' ').replace(/\s+/g, ' ').trim();
+        // 1. 移除表情符号, 2. 合并水平空格, 3. 移除换行符周围的空格, 4. 合并多个换行符, 5. 清理首尾
+        let cleaned = text.replace(decorativeEmojis, ' ')
+                          .replace(/[ \t]+/g, ' ')
+                          .replace(/ *\n */g, '\n')
+                          .replace(/\n{2,}/g, '\n')
+                          .trim();
         return cleaned.length === 0 ? '[EMPTY_CONTENT]' : cleaned;
     }
 
@@ -947,10 +973,11 @@ class KnowledgeBaseManager {
 
     _scheduleIndexSave(name) {
         if (this.saveTimers.has(name)) return;
+        const delay = name === 'global_tags' ? this.config.tagIndexSaveDelay : this.config.indexSaveDelay;
         const timer = setTimeout(() => {
             this._saveIndexToDisk(name);
             this.saveTimers.delete(name);
-        }, this.config.indexSaveDelay);
+        }, delay);
         this.saveTimers.set(name, timer);
     }
 
@@ -973,6 +1000,10 @@ class KnowledgeBaseManager {
         const match = content.match(/Tag:\s*(.+)$/im);
         if (!match) return [];
         let tags = match[1].split(/[,，、]/).map(t => t.trim()).filter(Boolean);
+        
+        // 🔧 修复：清理每个tag末尾的句号
+        tags = tags.map(t => t.replace(/[。.]+$/g, '').trim()).filter(Boolean);
+        
         if (this.config.tagBlacklistSuper.length > 0) {
             const superRegex = new RegExp(this.config.tagBlacklistSuper.join('|'), 'g');
             tags = tags.map(t => t.replace(superRegex, '').trim());
@@ -1010,8 +1041,18 @@ class KnowledgeBaseManager {
     }
 
     async shutdown() {
+        console.log('[KnowledgeBase] shutting down...');
         await this.watcher?.close();
+
+        // 确保所有待保存的索引都被写入磁盘
+        for (const [name, timer] of this.saveTimers) {
+            clearTimeout(timer);
+            this._saveIndexToDisk(name);
+        }
+        this.saveTimers.clear();
+
         this.db?.close();
+        console.log('[KnowledgeBase] Shutdown complete.');
     }
 }
 

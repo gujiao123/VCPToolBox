@@ -140,7 +140,7 @@ class LightMemoPlugin {
     }
 
     async handleSearch(args) {
-        const { query, maid, k = 5, rerank = false, search_all_knowledge_bases = false } = args;
+        const { query, maid, k = 5, rerank = false, search_all_knowledge_bases = false, tag_boost = 0.5 } = args;
 
         if (!query || !maid) {
             throw new Error("参数 'query' 和 'maid' 是必需的。");
@@ -193,9 +193,22 @@ class LightMemoPlugin {
         console.log(`[LightMemo] BM25 filtered to ${topByKeyword.length} chunks.`);
 
         // --- 第二阶段：向量精排 ---
-        const queryVector = await this.getSingleEmbedding(query);
+        let queryVector = await this.getSingleEmbedding(query);
         if (!queryVector) {
             throw new Error("查询内容向量化失败。");
+        }
+
+        let tagBoostInfo = null;
+        // 🚀【新步骤】如果启用了 TagMemo，则调用 KBM 的功能来增强向量
+        if (tag_boost > 0 && this.vectorDBManager && typeof this.vectorDBManager.applyTagBoost === 'function') {
+            console.log(`[LightMemo] Applying TagMemo boost with factor: ${tag_boost}`);
+            // KBM 的方法需要 Float32Array
+            const boostResult = this.vectorDBManager.applyTagBoost(new Float32Array(queryVector), tag_boost);
+            if (boostResult && boostResult.vector) {
+                queryVector = boostResult.vector; // 使用增强后的向量 (Float32Array)
+                tagBoostInfo = boostResult.info;
+                console.log(`[LightMemo] TagMemo boost applied. Matched tags: ${tagBoostInfo?.matchedTags?.slice(0, 5).join(', ')}`);
+            }
         }
 
         // 为每个候选chunk计算向量相似度
@@ -207,7 +220,8 @@ class LightMemoPlugin {
         // 混合BM25和向量分数
         const hybridScored = vectorScoredCandidates.map(c => ({
             ...c,
-            hybridScore: c.bm25Score * 0.6 + c.vectorScore * 0.4  // 提高关键词权重
+            hybridScore: c.bm25Score * 0.6 + c.vectorScore * 0.4,  // 提高关键词权重
+            tagBoostInfo: tagBoostInfo // 注入增强信息
         })).sort((a, b) => b.hybridScore - a.hybridScore);
 
         // 取top K
@@ -256,6 +270,9 @@ class LightMemoPlugin {
                 : 'N/A';
             
             content += `--- (来源: ${r.dbName}, 相关性: ${scoreDisplay})\n`;
+            if (r.tagBoostInfo && r.tagBoostInfo.matchedTags && r.tagBoostInfo.matchedTags.length > 0) {
+                content += `    [TagMemo 增强: ${r.tagBoostInfo.matchedTags.slice(0, 5).join(', ')}]\n`;
+            }
             content += `${r.text.trim()}\n`;
         });
 

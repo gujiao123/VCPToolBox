@@ -3,7 +3,8 @@ const messageProcessor = require('./messageProcessor.js');
 const vcpInfoHandler = require('../vcpInfoHandler.js');
 const fs = require('fs').promises;
 const path = require('path');
-const { getAuthCode } = require('./captchaDecoder'); // 导入统一的解码函数
+const { getAuthCode} = require('./captchaDecoder'); // 导入统一的解码函数
+const { StringDecoder } = require('string_decoder'); // 修复中文编码截断问题
 
 async function getRealAuthCode(debugMode = false) {
   try {
@@ -64,15 +65,109 @@ async function fetchWithRetry(
   }
   throw new Error('Fetch failed after all retries.');
 }
+// 辅助函数：根据新上下文刷新对话历史中的RAG区块
+async function _refreshRagBlocksIfNeeded(messages, newContext, pluginManager, debugMode = false) {
+    const ragPlugin = pluginManager.messagePreprocessors?.get('RAGDiaryPlugin');
+    // 检查插件是否存在且是否实现了refreshRagBlock方法
+    if (!ragPlugin || typeof ragPlugin.refreshRagBlock !== 'function') {
+        if (debugMode) {
+            console.log('[VCP Refresh] RAGDiaryPlugin 未找到或版本不兼容 (缺少 refreshRagBlock)，跳过刷新。');
+        }
+        return messages;
+    }
 
-//me 消息的处理类
+    // 创建消息数组的深拷贝以安全地进行修改
+    const newMessages = JSON.parse(JSON.stringify(messages));
+    let hasRefreshed = false;
+
+    // 🟢 改进点1：使用更健壮的正则 [\s\S]*? 匹配跨行内容，并允许标签周围有空格
+    const ragBlockRegex = /<!-- VCP_RAG_BLOCK_START ([\s\S]*?) -->([\s\S]*?)<!-- VCP_RAG_BLOCK_END -->/g;
+
+    for (let i = 0; i < newMessages.length; i++) {
+        // 只处理 assistant 和 system 角色中的字符串内容
+        // 🟢 改进点2：有些场景下 RAG 可能会被注入到 user 消息中，建议也检查 user
+        if (['assistant', 'system', 'user'].includes(newMessages[i].role) && typeof newMessages[i].content === 'string') {
+            let messageContent = newMessages[i].content;
+            
+            // 快速检查是否存在标记，避免无效正则匹配
+            if (!messageContent.includes('VCP_RAG_BLOCK_START')) {
+                continue;
+            }
+
+            // 使用 replace 的回调函数模式来处理异步逻辑通常比较麻烦
+            // 所以我们先收集所有匹配项，然后串行处理替换
+            const matches = [...messageContent.matchAll(ragBlockRegex)];
+            
+            if (matches.length > 0) {
+                if (debugMode) console.log(`[VCP Refresh] 消息[${i}]中发现 ${matches.length} 个 RAG 区块，准备刷新...`);
+                
+                // 我们从后往前替换，这样替换操作不会影响前面匹配项的索引位置（虽然 replace(str) 不依赖索引，但这是一个好习惯）
+                // 这里为了简单，我们直接构建一个新的 content 字符串或使用 split/join 策略
+                
+                for (const match of matches) {
+                    const fullMatchString = match[0]; // 完整的 ... const metadataJson = match[1];    // 第一个捕获组：元数据 JSON
+                    const metadataJson = match[1];
+                    
+                    try {
+                        // 🟢 改进点3：解析元数据时如果不严谨可能会报错，增加容错
+                        const metadata = JSON.parse(metadataJson);
+                        
+                        if (debugMode) {
+                            console.log(`[VCP Refresh] 正在刷新区块 (${metadata.dbName})...`);
+                        }
+
+                        // V4.0: Find the last *true* user message to use as the original query
+                        let originalUserQuery = '';
+                        // Search backwards from the message *before* the one containing the RAG block
+                        for (let j = i - 1; j >= 0; j--) {
+                            const prevMsg = newMessages[j];
+                            if (prevMsg.role === 'user' && typeof prevMsg.content === 'string' &&
+                                !prevMsg.content.startsWith('<!-- VCP_TOOL_PAYLOAD -->') &&
+                                !prevMsg.content.startsWith('[系统提示:]') &&
+                                !prevMsg.content.startsWith('[系统邀请指令:]')
+                            ) {
+                                originalUserQuery = prevMsg.content;
+                                if (debugMode) console.log(`[VCP Refresh] Found original user query for refresh at index ${j}.`);
+                                break; // Found it, stop searching
+                            }
+                        }
+                        if (!originalUserQuery && debugMode) {
+                            console.warn(`[VCP Refresh] Could not find a true user query for the RAG block at index ${i}. Refresh may be inaccurate.`);
+                        }
+
+                        // 调用 RAG 插件的刷新接口, now with originalUserQuery
+                        const newBlock = await ragPlugin.refreshRagBlock(metadata, newContext, originalUserQuery);
+                        
+                        // 🟢 改进点4：关键修复！使用回调函数进行替换，防止 newBlock 中的 "$" 符号被解析为正则特殊字符
+                        // 这是一个极其常见的 Bug，导致包含 $ 的内容（如公式、代码）替换失败或乱码
+                        messageContent = messageContent.replace(fullMatchString, () => newBlock);
+                        
+                        hasRefreshed = true;
+
+                    } catch (e) {
+                        console.error("[VCP Refresh] 刷新 RAG 区块失败:", e.message);
+                        if (debugMode) console.error(e);
+                        // 出错时保持原样，不中断流程
+                    }
+                }
+                newMessages[i].content = messageContent;
+            }
+        }
+    }
+    
+    if(hasRefreshed && debugMode) {
+        console.log("[VCP Refresh] ✅ 对话历史中的 RAG 记忆区块已根据新上下文成功刷新。");
+    }
+
+    return newMessages;
+}
+
 class ChatCompletionHandler {
   constructor(config) {
     this.config = config;
   }
 
   async handle(req, res, forceShowVCP = false) {
-    //me 获取定义中的配置项
     const {
       apiUrl,
       apiKey,
@@ -92,15 +187,15 @@ class ChatCompletionHandler {
     } = this.config;
 
     const shouldShowVCP = SHOW_VCP_OUTPUT || forceShowVCP;
-    //me 处理客户端 IP 地址 ipv6 转 ipv4
+
     let clientIp = req.ip;
     if (clientIp && clientIp.substr(0, 7) === '::ffff:') {
       clientIp = clientIp.substr(7);
     }
-    //me 生成请求 ID 并创建中止控制器
+
     const id = req.body.requestId || req.body.messageId;
     const abortController = new AbortController();
-    //me 存在请求 ID 则将请求信息存储到活动请求列表中
+
     if (id) {
       activeRequests.set(id, {
         req,
@@ -110,15 +205,13 @@ class ChatCompletionHandler {
         aborted: false // 修复 Bug #4: 添加中止标志
       });
     }
-    //me 保存一份原始的请求体
+
     let originalBody = req.body;
-    //me“我想要一个持续连接，请以流的形式（例如 SSE 或 chunked encoding）将数据逐步发送给我，而不是等到所有结果都准备好。”
     const isOriginalRequestStreaming = originalBody.stream === true;
 
     try {
       if (originalBody.model) {
         const originalModel = originalBody.model;
-        //me 模型重定向处理
         const redirectedModel = modelRedirectHandler.redirectModelForBackend(originalModel);
         if (redirectedModel !== originalModel) {
           originalBody = { ...originalBody, model: redirectedModel };
@@ -127,11 +220,7 @@ class ChatCompletionHandler {
       }
 
       await writeDebugLog('LogInput', originalBody);
-      //me 检查消息中是否包含禁用媒体处理的占位符
 
-      // 当 不包含 此占位符时，后续代码会执行正常的媒体处理流程（例如，如果消息包含图片 URL，可能会将图片下载、上传到某个地方，或者进行其他处理）。
-
-      // 当 包含 此占位符时，它指示服务器不要对消息中的媒体数据进行默认处理，而是可能将 Base64 数据或其他原始媒体信息直接传递给最终的 AI 模型或另一个处理单元。
       let shouldProcessMedia = true;
       if (originalBody.messages && Array.isArray(originalBody.messages)) {
         for (const msg of originalBody.messages) {
@@ -159,7 +248,6 @@ class ChatCompletionHandler {
 
       // --- VCPTavern 优先处理 ---
       // 在任何变量替换之前，首先运行 VCPTavern 来注入预设内容
-      //me 用于酒馆的设置
       let tavernProcessedMessages = originalBody.messages;
       if (pluginManager.messagePreprocessors.has('VCPTavern')) {
         if (DEBUG_MODE) console.log(`[Server] Calling priority message preprocessor: VCPTavern`);
@@ -182,17 +270,9 @@ class ChatCompletionHandler {
 
       // 调用一个主函数来递归处理所有变量，确保Agent优先展开
       let processedMessages = await Promise.all(
-        // 遍历传入的消息数组 (tavernProcessedMessages)
         tavernProcessedMessages.map(async msg => {
-          // 1. 深拷贝 (Deep Copy)
-          // 创建当前消息对象的副本。这样做是为了避免直接修改原始引用（msg），
-          // 防止对后续流程或其他插件产生副作用。
           const newMessage = JSON.parse(JSON.stringify(msg));
-          // 2. 情况 A：处理普通纯文本消息
-          // 如果 content 存在且是一个字符串（例如标准的 GPT-3.5/4 文本格式）
           if (newMessage.content && typeof newMessage.content === 'string') {
-            // 调用核心处理函数 replaceAgentVariables
-            // 这个函数负责解析文本中的变量（宏）并进行替换
             // messageProcessor.js 中的 replaceAgentVariables 将被改造为处理所有变量的主函数
             newMessage.content = await messageProcessor.replaceAgentVariables(
               newMessage.content,
@@ -200,18 +280,11 @@ class ChatCompletionHandler {
               msg.role,
               processingContext,
             );
-            // 3. 情况 B：处理多模态消息 (Multimodal)
-            // 现在的模型（如 GPT-4 Vision, Claude 3）支持数组格式的 content
-            // 结构通常是: [{ type: 'text', text: '...' }, { type: 'image_url', ... }]
           } else if (Array.isArray(newMessage.content)) {
-            // 再次使用 Promise.all 并行处理 content 数组中的每一个部分 (part)
             newMessage.content = await Promise.all(
               newMessage.content.map(async part => {
-                // 只处理类型为 'text' 的部分，图片部分保持原样
                 if (part.type === 'text' && typeof part.text === 'string') {
                   const newPart = JSON.parse(JSON.stringify(part));
-                  // 对多模态消息中的文本部分进行变量替换
-                  // 注意：这里替换的是 part.text 而不是 part.content
                   newPart.text = await messageProcessor.replaceAgentVariables(
                     newPart.text,
                     originalBody.model,
@@ -383,6 +456,7 @@ class ChatCompletionHandler {
         // Helper function to process an AI response stream
         async function processAIResponseStreamHelper(aiResponse, isInitialCall) {
           return new Promise((resolve, reject) => {
+            const decoder = new StringDecoder('utf8'); // 修复中文编码截断问题：初始化解码器
             let sseBuffer = ''; // Buffer for incomplete SSE lines
             let collectedContentThisTurn = ''; // Collects textual content from delta
             let rawResponseDataThisTurn = ''; // Collects all raw chunks for diary
@@ -393,16 +467,16 @@ class ChatCompletionHandler {
             const abortHandler = () => {
               streamAborted = true;
               if (DEBUG_MODE) console.log('[Stream Abort] Abort signal received, stopping stream processing.');
-
+              
               // 销毁响应流以停止数据接收
               if (aiResponse.body && !aiResponse.body.destroyed) {
                 aiResponse.body.destroy();
               }
-
+              
               // 立即 resolve 以退出流处理
               resolve({ content: collectedContentThisTurn, raw: rawResponseDataThisTurn });
             };
-
+            
             if (abortController && abortController.signal) {
               abortController.signal.addEventListener('abort', abortHandler);
             }
@@ -410,7 +484,9 @@ class ChatCompletionHandler {
             aiResponse.body.on('data', chunk => {
               // 修复 Bug #5: 如果已中止，忽略后续数据
               if (streamAborted) return;
-              const chunkString = chunk.toString('utf-8');
+              
+              // 修复中文编码截断问题：使用 decoder.write 代替 chunk.toString
+              const chunkString = decoder.write(chunk);
               rawResponseDataThisTurn += chunkString;
               sseLineBuffer += chunkString;
 
@@ -444,7 +520,15 @@ class ChatCompletionHandler {
 
             // Process any remaining data in the buffer on stream end
             aiResponse.body.on('end', () => {
+              // 修复中文编码截断问题：确保将解码器中剩余的字节也输出
+              const remainingString = decoder.end();
+              if (remainingString) {
+                sseLineBuffer += remainingString;
+                rawResponseDataThisTurn += remainingString;
+              }
+
               if (sseLineBuffer.trim()) {
+                // 注意：这里用 Buffer.from 是安全的，因为 sseLineBuffer 已经是完整的 JS 字符串了
                 const modifiedChunk = Buffer.from(sseLineBuffer, 'utf-8');
                 processChunk(modifiedChunk);
               }
@@ -552,7 +636,7 @@ class ChatCompletionHandler {
               }
               resolve({ content: collectedContentThisTurn, raw: rawResponseDataThisTurn });
             }
-
+            
             aiResponse.body.on('error', streamError => {
               // 修复 Bug #5: 移除 abort 监听器
               if (abortController && abortController.signal) {
@@ -684,7 +768,8 @@ class ChatCompletionHandler {
           }
           if (DEBUG_MODE)
             console.log(
-              `[VCP Stream Loop] Found ${toolCallsInThisAIResponse.length} tool calls. Iteration ${recursionDepth + 1
+              `[VCP Stream Loop] Found ${toolCallsInThisAIResponse.length} tool calls. Iteration ${
+                recursionDepth + 1
               }.`,
             );
 
@@ -996,7 +1081,39 @@ class ChatCompletionHandler {
           const toolResults = await Promise.all(toolExecutionPromises);
           const combinedToolResultsForAI = toolResults.flat(); // Flatten the array of content arrays
           await writeDebugLog('LogToolResultForAI-Stream', { role: 'user', content: combinedToolResultsForAI });
-          currentMessagesForLoop.push({ role: 'user', content: combinedToolResultsForAI });
+          
+          // V4.0: Create a unified tool payload with a hidden marker
+          // 修复 Bug: 如果结果包含图片，JSON.stringify 会导致 Base64 被视为几十万 token 的文本
+          const hasImage = combinedToolResultsForAI.some(item => item.type === 'image_url');
+          
+          // 1. 为 RAG 和日志生成轻量级文本 (去除 Base64)
+          const toolResultsTextForRAG = JSON.stringify(combinedToolResultsForAI, (key, value) => {
+              if ((key === 'url' || key === 'image_url') && typeof value === 'string' && value.startsWith('data:')) {
+                  return "[Base64 Image Data Omitted]";
+              }
+              return value;
+          });
+
+          // 2. 为 AI 生成真正的 Payload
+          let finalToolPayloadForAI;
+          if (hasImage) {
+              // 多模态模式：保持数组结构，将标记放入第一个文本块
+              finalToolPayloadForAI = [
+                  { type: 'text', text: `<!-- VCP_TOOL_PAYLOAD -->\nHere are the tool results:` },
+                  ...combinedToolResultsForAI
+              ];
+          } else {
+              // 纯文本模式：保持原有的 JSON 字符串模式 (兼容性好)
+              finalToolPayloadForAI = `<!-- VCP_TOOL_PAYLOAD -->\n${toolResultsTextForRAG}`;
+          }
+
+          // --- VCP RAG 刷新注入点 (流式) ---
+          const lastAiMessage = currentAIContentForLoop;
+          // 注意：传给 RAG 的必须是去除 Base64 的字符串，否则 RAG 也会卡死
+          currentMessagesForLoop = await _refreshRagBlocksIfNeeded(currentMessagesForLoop, { lastAiMessage, toolResultsText: toolResultsTextForRAG }, pluginManager, DEBUG_MODE);
+          // --- 注入点结束 ---
+
+          currentMessagesForLoop.push({ role: 'user', content: finalToolPayloadForAI });
           if (DEBUG_MODE)
             console.log(
               '[VCP Stream Loop] Combined tool results for next AI call (first 200):',
@@ -1005,7 +1122,22 @@ class ChatCompletionHandler {
 
           // --- Make next AI call (stream: true) ---
           if (!res.writableEnded) {
-            res.write('\n'); // 在下一个AI响应开始前，向客户端发送一个换行符
+            const sepChunk = {
+              id: `chatcmpl-VCP-separator-${Date.now()}`,
+              object: 'chat.completion.chunk',
+              created: Math.floor(Date.now() / 1000),
+              model: originalBody.model,
+              choices: [
+                {
+                  index: 0,
+                  delta: {
+                    content: '\n',  // 或者 '---\n'
+                  },
+                  finish_reason: null,
+                },
+              ],
+            };
+            res.write(`data: ${JSON.stringify(sepChunk)}\n\n`);
           }
           if (DEBUG_MODE) console.log('[VCP Stream Loop] Fetching next AI response.');
           const nextAiAPIResponse = await fetchWithRetry(
@@ -1504,7 +1636,39 @@ class ChatCompletionHandler {
 
             const combinedToolResultsForAI = toolResults.flat(); // Flatten the array of content arrays
             await writeDebugLog('LogToolResultForAI-NonStream', { role: 'user', content: combinedToolResultsForAI });
-            currentMessagesForNonStreamLoop.push({ role: 'user', content: combinedToolResultsForAI });
+            
+            // V4.0: Create a unified tool payload with a hidden marker
+            // 修复 Bug: 如果结果包含图片，JSON.stringify 会导致 Base64 被视为几十万 token 的文本
+            const hasImage = combinedToolResultsForAI.some(item => item.type === 'image_url');
+            
+            // 1. 为 RAG 和日志生成轻量级文本 (去除 Base64)
+            const toolResultsTextForRAG = JSON.stringify(combinedToolResultsForAI, (key, value) => {
+                if ((key === 'url' || key === 'image_url') && typeof value === 'string' && value.startsWith('data:')) {
+                    return "[Base64 Image Data Omitted]";
+                }
+                return value;
+            });
+
+            // 2. 为 AI 生成真正的 Payload
+            let finalToolPayloadForAI;
+            if (hasImage) {
+                // 多模态模式：保持数组结构，将标记放入第一个文本块
+                finalToolPayloadForAI = [
+                    { type: 'text', text: `<!-- VCP_TOOL_PAYLOAD -->\nHere are the tool results:` },
+                    ...combinedToolResultsForAI
+                ];
+            } else {
+                // 纯文本模式：保持原有的 JSON 字符串模式
+                finalToolPayloadForAI = `<!-- VCP_TOOL_PAYLOAD -->\n${toolResultsTextForRAG}`;
+            }
+
+            // --- VCP RAG 刷新注入点 (非流式) ---
+            const lastAiMessage = currentAIContentForLoop;
+            // 注意：传给 RAG 的是去除 Base64 的字符串
+            currentMessagesForNonStreamLoop = await _refreshRagBlocksIfNeeded(currentMessagesForNonStreamLoop, { lastAiMessage, toolResultsText: toolResultsTextForRAG }, pluginManager, DEBUG_MODE);
+            // --- 注入点结束 ---
+
+            currentMessagesForNonStreamLoop.push({ role: 'user', content: finalToolPayloadForAI });
 
             // Fetch the next AI response
             if (DEBUG_MODE) console.log('[Multi-Tool] Fetching next AI response after processing tools.');
@@ -1619,89 +1783,11 @@ class ChatCompletionHandler {
       }
     } catch (error) {
       if (error.name === 'AbortError') {
-        console.log(`[Abort] Request ${id} was aborted by the user.`);
-
-        // 修复竞态条件Bug: 检查响应是否已被中断路由关闭
-        if (res.writableEnded || res.destroyed) {
-          console.log(`[Abort] Response already closed by interrupt handler for ${id}.`);
-          return;
-        }
-
-        // 检查响应头是否已被中断路由发送
-        if (res.headersSent) {
-          console.log(`[Abort] Headers already sent (likely by interrupt handler). Checking response type...`);
-
-          if (res.getHeader('Content-Type')?.includes('text/event-stream')) {
-            // 流式响应已开始，发送[DONE]信号
-            try {
-              res.write('data: [DONE]\n\n', () => {
-                res.end();
-              });
-            } catch (writeError) {
-              console.error(`[Abort] Error writing [DONE] signal: ${writeError.message}`);
-              if (!res.writableEnded) res.end();
-            }
-          } else {
-            // 非流式响应，中断路由应该已经处理完毕，直接结束
-            console.log(`[Abort] Non-stream response with headers sent. Assuming interrupt handler finished.`);
-            if (!res.writableEnded) res.end();
-          }
-        } else {
-          // 响应头未发送，中断路由可能还没执行或执行失败
-          // 这里等待一小段时间，让中断路由有机会处理
-          console.log(`[Abort] Headers not sent yet. Waiting for interrupt handler...`);
-          setTimeout(() => {
-            try {
-              // 再次检查响应状态
-              if (res.writableEnded || res.destroyed) {
-                console.log(`[Abort] Response was closed by interrupt handler during wait.`);
-                return;
-              }
-              
-              if (!res.headersSent) {
-                // 中断路由没有处理，我们来处理
-                console.log(`[Abort] Interrupt handler didn't process. Handling abort here.`);
-                if (isOriginalRequestStreaming) {
-                  // 流式请求
-                  res.status(200);
-                  res.setHeader('Content-Type', 'text/event-stream');
-                  res.setHeader('Cache-Control', 'no-cache');
-                  res.setHeader('Connection', 'keep-alive');
-                  
-                  const abortChunk = {
-                    id: `chatcmpl-abort-${Date.now()}`,
-                    object: 'chat.completion.chunk',
-                    created: Math.floor(Date.now() / 1000),
-                    model: originalBody.model || 'unknown',
-                    choices: [{
-                      index: 0,
-                      delta: { content: '请求已被用户中止' },
-                      finish_reason: 'stop'
-                    }]
-                  };
-                  res.write(`data: ${JSON.stringify(abortChunk)}\n\n`);
-                  res.write('data: [DONE]\n\n');
-                  res.end();
-                } else {
-                  // 非流式请求
-                  res.status(200).json({
-                    choices: [{
-                      index: 0,
-                      message: { role: 'assistant', content: '请求已被用户中止' },
-                      finish_reason: 'stop',
-                    }],
-                  });
-                }
-              }
-            } catch (e) {
-                console.error('[Abort] Error within abort handler timeout:', e.message);
-                if (!res.writableEnded) {
-                    try { res.end(); } catch (endErr) { /* ignore */ }
-                }
-            }
-          }, 50); // 等待50ms让中断路由处理
-        }
-        return;
+        // When a request is aborted, the '/v1/interrupt' handler is responsible for closing the response stream.
+        // This catch block should simply log the event and stop processing to prevent race conditions
+        // and avoid throwing an uncaught exception if it also tries to write to the already-closed stream.
+        console.log(`[Abort] Caught AbortError for request ${id}. Execution will be halted. The interrupt handler is responsible for the client response.`);
+        return; // Stop processing and allow the 'finally' block to clean up.
       }
       // Only log full stack trace for non-abort errors
       console.error('处理请求或转发时出错:', error.message, error.stack);
@@ -1716,7 +1802,7 @@ class ChatCompletionHandler {
           res.setHeader('Connection', 'keep-alive');
 
           const errorContent = `[ERROR] 代理服务器在连接上游API时失败，可能已达到重试上限或网络错误: ${error.message}`;
-
+          
           // Send an error chunk
           const errorPayload = {
             id: `chatcmpl-VCP-error-${Date.now()}`,
@@ -1781,13 +1867,13 @@ class ChatCompletionHandler {
           if (!requestData.aborted) {
             // 标记为已中止（防止重复 abort）
             requestData.aborted = true;
-
+            
             // 安全地 abort（检查是否已经 aborted）
             if (requestData.abortController && !requestData.abortController.signal.aborted) {
               requestData.abortController.abort();
             }
           }
-
+          
           // 无论如何都要删除 Map 条目以释放内存
           // 但使用 setImmediate 延迟删除，确保 interrupt 路由完成操作
           setImmediate(() => {

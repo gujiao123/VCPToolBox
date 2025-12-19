@@ -33,17 +33,55 @@ async function _sendBatch(batchTexts, config, batchNumber) {
             if (!response.ok) {
                 if (response.status === 429) {
                     // 429 限流时，增加等待时间
-                    const waitTime = 5000 * attempt; 
+                    const waitTime = 5000 * attempt;
                     console.warn(`[Embedding] Batch ${batchNumber} rate limited (429). Retrying in ${waitTime/1000}s...`);
                     await new Promise(r => setTimeout(r, waitTime));
                     continue;
                 }
-                throw new Error(`API Error ${response.status}: ${responseBodyText}`);
+                throw new Error(`API Error ${response.status}: ${responseBodyText.substring(0, 500)}`);
             }
 
-            const data = JSON.parse(responseBodyText);
-            if (!data.data || !Array.isArray(data.data)) {
-                throw new Error('Invalid API response structure');
+            let data;
+            try {
+                data = JSON.parse(responseBodyText);
+            } catch (parseError) {
+                console.error(`[Embedding] JSON Parse Error for Batch ${batchNumber}:`);
+                console.error(`Response (first 500 chars): ${responseBodyText.substring(0, 500)}`);
+                throw new Error(`Failed to parse API response as JSON: ${parseError.message}`);
+            }
+
+            // 增强的响应结构验证和详细错误信息
+            if (!data) {
+                throw new Error(`API returned empty/null response`);
+            }
+            
+            // 检查是否是错误响应
+            if (data.error) {
+                const errorMsg = data.error.message || JSON.stringify(data.error);
+                const errorCode = data.error.code || response.status;
+                console.error(`[Embedding] API Error for Batch ${batchNumber}:`);
+                console.error(`  Error Code: ${errorCode}`);
+                console.error(`  Error Message: ${errorMsg}`);
+                console.error(`  Hint: Check if embedding model "${config.model}" is available on your API server`);
+                throw new Error(`API Error ${errorCode}: ${errorMsg}`);
+            }
+            
+            if (!data.data) {
+                console.error(`[Embedding] Missing 'data' field in response for Batch ${batchNumber}`);
+                console.error(`Response keys: ${Object.keys(data).join(', ')}`);
+                console.error(`Response preview: ${JSON.stringify(data).substring(0, 500)}`);
+                throw new Error(`Invalid API response structure: missing 'data' field`);
+            }
+            
+            if (!Array.isArray(data.data)) {
+                console.error(`[Embedding] 'data' field is not an array for Batch ${batchNumber}`);
+                console.error(`data type: ${typeof data.data}`);
+                console.error(`data value: ${JSON.stringify(data.data).substring(0, 200)}`);
+                throw new Error(`Invalid API response structure: 'data' is not an array`);
+            }
+
+            if (data.data.length === 0) {
+                console.warn(`[Embedding] Warning: Batch ${batchNumber} returned empty embeddings array`);
             }
             
             // 简单的 Log，证明并发正在跑
