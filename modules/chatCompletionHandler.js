@@ -1,6 +1,7 @@
 // modules/chatCompletionHandler.js
 const messageProcessor = require('./messageProcessor.js');
 const vcpInfoHandler = require('../vcpInfoHandler.js');
+const contextManager = require('./contextManager.js');
 const fs = require('fs').promises;
 const path = require('path');
 const { getAuthCode} = require('./captchaDecoder'); // 导入统一的解码函数
@@ -208,6 +209,28 @@ class ChatCompletionHandler {
 
     let originalBody = req.body;
     const isOriginalRequestStreaming = originalBody.stream === true;
+
+    // --- 上下文控制 (Context Control) ---
+    // 1. 拦截 contextTokenLimit 参数
+    const contextTokenLimit = originalBody.contextTokenLimit;
+    if (contextTokenLimit !== undefined) {
+        if (DEBUG_MODE) console.log(`[ContextControl] 检测到 contextTokenLimit: ${contextTokenLimit}`);
+        // 2. 从发送给后端的 body 中移除该参数
+        delete originalBody.contextTokenLimit;
+
+        // 3. 执行上下文修剪
+        if (originalBody.messages && Array.isArray(originalBody.messages)) {
+            const originalCount = originalBody.messages.length;
+            originalBody.messages = contextManager.pruneMessages(
+                originalBody.messages,
+                contextTokenLimit,
+                DEBUG_MODE
+            );
+            if (DEBUG_MODE && originalBody.messages.length < originalCount) {
+                console.log(`[ContextControl] 上下文已修剪: ${originalCount} -> ${originalBody.messages.length} 条消息`);
+            }
+        }
+    }
 
     try {
       if (originalBody.model) {

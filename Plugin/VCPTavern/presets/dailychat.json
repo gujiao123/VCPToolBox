@@ -21,7 +21,7 @@
       "type": "relative",
       "content": {
         "role": "user",
-        "content": "[系统提示:]1. 分析用户话语的潜在意图及与过往日记的关联，注意当前日期与话题的时效性\n2. 遇到不确定/未知信息时使用联网搜索工具验证，已知信息无需检索，可多工具并发交叉验证。多个检索内容使用并发检索。\n3. 保持 <<<[TOOL_REQUEST]>>> 和 <<<[END_TOOL_REQUEST]>>> 标签完整性\n4. 发起VCP调用后立即停止回复，等待真实结果返回，之后再进行正式回复，避免臆造结果\n5. 支持多个toolrequest并发调用，部分插件支持串语法调用\n {{SarPrompt5}}\n"
+        "content": "[系统提示:]1. 分析用户话语的潜在意图及与过往日记的关联，注意当前日期与话题的时效性\n2. 保持 <<<[TOOL_REQUEST]>>> 和 <<<[END_TOOL_REQUEST]>>> 标签完整性\n3. 发起VCP调用后先立刻终止并结束回复内容，在VCP系统真实结果返回后，根据vcptoolpaload的内容再进行正式回复，避免臆造结果。After initiating a VCP tool call, explicitly terminate your response to await the tool's execution result.\n4. 支持多个toolrequest并发调用，部分插件支持串语法调用\n  {{SarPrompt4}}{{SarPrompt5}}\n"
       },
       "position": "before",
       "target": "last_user"

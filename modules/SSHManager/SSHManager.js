@@ -1,5 +1,5 @@
 /**
- * SSHManager - SSH 连接管理器
+ * SSHManager - SSH 连接管理器（共享模块版本）
  * 
  * 功能：
  * - 多主机 SSH 连接管理
@@ -8,8 +8,10 @@
  * - 跳板机（Jump Host）支持
  * - 自动重连和心跳保活
  * - 连接数量限制和重试机制
+ * - 流式会话支持（用于 tail -f 等长时命令）
  *
- * @version 1.1.0
+ * @version 1.2.0
+ * @author VCP Team
  */
 
 const { Client } = require('ssh2');
@@ -28,6 +30,9 @@ class SSHManager {
         
         // 连接状态
         this.connectionStatus = new Map();
+        
+        // 流式会话池
+        this.streamSessions = new Map();
         
         // 调试日志收集器（用于返回给调用者）
         this.debugLogs = [];
@@ -50,7 +55,7 @@ class SSHManager {
      */
     _log(message) {
         const timestamp = new Date().toISOString();
-        const logEntry = `[${timestamp}] ${message}`;
+        const logEntry = `[${timestamp}] [SSHManager] ${message}`;
         console.error(logEntry);  // 输出到 stderr（VCP 会在 DebugMode 下显示）
         this.debugLogs.push(logEntry);  // 收集到数组
     }
@@ -112,7 +117,7 @@ class SSHManager {
         }
         // 相对路径：相对于插件目录
         else if (keyPath.startsWith('./') || keyPath.startsWith('../') || !path.isAbsolute(keyPath)) {
-            resolvedPath = path.join(__dirname, '..', keyPath);
+            resolvedPath = path.join(__dirname, '..', '..', 'Plugin', 'LinuxShellExecutor', keyPath);
         }
         
         // 规范化路径
@@ -479,6 +484,356 @@ class SSHManager {
         });
     }
     
+    // ==================== 流式会话支持（新增） ====================
+    
+    /**
+     * 创建流式会话（用于 tail -f 等永不结束的命令）
+     * 
+     * @param {string} hostId - 主机ID
+     * @param {string} command - 要执行的命令
+     * @param {Object} options - 选项
+     * @param {number} options.timeout - 会话超时时间（默认不超时）
+     * @param {number} options.maxLineBuffer - 最大行缓冲大小（默认 64KB）
+     * @returns {Promise<StreamSession>} 流式会话对象
+     */
+    async createStreamSession(hostId, command, options = {}) {
+        const connection = await this.connect(hostId);
+        
+        if (connection.type === 'local') {
+            return this._createLocalStreamSession(command, options);
+        }
+        
+        return this._createSSHStreamSession(connection, command, options);
+    }
+    
+    /**
+     * 创建 SSH 流式会话
+     * @private
+     */
+    async _createSSHStreamSession(connection, command, options = {}) {
+        const sessionId = `stream-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        const maxLineBuffer = options.maxLineBuffer || 65536;  // 64KB
+        
+        return new Promise((resolve, reject) => {
+            connection.client.shell((err, stream) => {
+                if (err) {
+                    this._log(`创建 shell 会话失败: ${err.message}`);
+                    return reject(new Error(`创建 shell 会话失败: ${err.message}`));
+                }
+                
+                // 行缓冲器
+                let lineBuffer = '';
+                
+                const session = {
+                    sessionId,
+                    stream,
+                    hostId: connection.hostId,
+                    command,
+                    isActive: true,
+                    startedAt: null,
+                    linesProcessed: 0,
+                    bytesReceived: 0,
+                    
+                    // 事件回调
+                    onLine: null,      // 每行数据回调
+                    onData: null,      // 原始数据回调
+                    onError: null,     // 错误回调
+                    onClose: null,     // 关闭回调
+                    
+                    /**
+                     * 启动命令执行
+                     */
+                    start: () => {
+                        session.startedAt = new Date();
+                        stream.write(command + '\n');
+                        this._log(`流式会话已启动: ${sessionId} - ${command}`);
+                    },
+                    
+                    /**
+                     * 停止命令执行（发送 Ctrl+C）
+                     */
+                    stop: () => {
+                        if (session.isActive) {
+                            stream.write('\x03'); // Ctrl+C
+                            setTimeout(() => {
+                                if (session.isActive) {
+                                    stream.end('exit\n');
+                                }
+                            }, 500);
+                            this._log(`流式会话已停止: ${sessionId}`);
+                        }
+                    },
+                    
+                    /**
+                     * 强制关闭会话
+                     */
+                    destroy: () => {
+                        session.isActive = false;
+                        stream.destroy();
+                        this.streamSessions.delete(sessionId);
+                        this._log(`流式会话已销毁: ${sessionId}`);
+                    },
+                    
+                    /**
+                     * 获取会话统计信息
+                     */
+                    getStats: () => ({
+                        sessionId,
+                        hostId: connection.hostId,
+                        command,
+                        isActive: session.isActive,
+                        startedAt: session.startedAt,
+                        duration: session.startedAt ? Date.now() - session.startedAt.getTime() : 0,
+                        linesProcessed: session.linesProcessed,
+                        bytesReceived: session.bytesReceived
+                    })
+                };
+                
+                // 处理数据流
+                stream.on('data', (data) => {
+                    const text = data.toString();
+                    session.bytesReceived += data.length;
+                    
+                    // 调试日志：记录每次收到的数据
+                    this._log(`[StreamSession:${sessionId}] 收到数据: ${data.length} 字节, 总计: ${session.bytesReceived} 字节`);
+                    this._log(`[StreamSession:${sessionId}] 数据内容(前100字符): ${text.substring(0, 100).replace(/\n/g, '\\n').replace(/\r/g, '\\r')}`);
+                    
+                    // 原始数据回调
+                    if (session.onData) {
+                        session.onData(text);
+                    } else {
+                        this._log(`[StreamSession:${sessionId}] 警告: onData 回调未设置!`);
+                    }
+                    
+                    // 行处理
+                    if (session.onLine) {
+                        lineBuffer += text;
+                        
+                        // 防止缓冲区溢出
+                        if (lineBuffer.length > maxLineBuffer) {
+                            this._log(`行缓冲区溢出，强制刷新: ${sessionId}`);
+                            session.onLine(lineBuffer);
+                            session.linesProcessed++;
+                            lineBuffer = '';
+                        }
+                        
+                        // 按行分割
+                        const lines = lineBuffer.split('\n');
+                        lineBuffer = lines.pop() || '';  // 保留最后一个不完整的行
+                        
+                        for (const line of lines) {
+                            if (line.trim()) {
+                                session.onLine(line);
+                                session.linesProcessed++;
+                            }
+                        }
+                    }
+                });
+                
+                stream.stderr.on('data', (data) => {
+                    const text = data.toString();
+                    if (session.onError) {
+                        session.onError(text);
+                    }
+                });
+                
+                stream.on('close', () => {
+                    session.isActive = false;
+                    
+                    // 刷新剩余的行缓冲
+                    if (session.onLine && lineBuffer.trim()) {
+                        session.onLine(lineBuffer);
+                        session.linesProcessed++;
+                    }
+                    
+                    if (session.onClose) {
+                        session.onClose();
+                    }
+                    
+                    this.streamSessions.delete(sessionId);
+                    this._log(`流式会话已关闭: ${sessionId}`);
+                });
+                
+                stream.on('error', (err) => {
+                    session.isActive = false;
+                    if (session.onError) {
+                        session.onError(err.message);
+                    }
+                    this.streamSessions.delete(sessionId);
+                });
+                
+                // 存储会话
+                this.streamSessions.set(sessionId, session);
+                
+                this._log(`流式会话已创建: ${sessionId} (${connection.hostId})`);
+                resolve(session);
+            });
+        });
+    }
+    
+    /**
+     * 创建本地流式会话
+     * @private
+     */
+    _createLocalStreamSession(command, options = {}) {
+        const { spawn } = require('child_process');
+        const sessionId = `stream-local-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        const maxLineBuffer = options.maxLineBuffer || 65536;
+        
+        return new Promise((resolve, reject) => {
+            // 行缓冲器
+            let lineBuffer = '';
+            
+            const session = {
+                sessionId,
+                process: null,
+                hostId: 'local',
+                command,
+                isActive: false,
+                startedAt: null,
+                linesProcessed: 0,
+                bytesReceived: 0,
+                
+                onLine: null,
+                onData: null,
+                onError: null,
+                onClose: null,
+                
+                start: () => {
+                    session.process = spawn('/bin/bash', ['-c', command], {
+                        stdio: ['pipe', 'pipe', 'pipe']
+                    });
+                    session.isActive = true;
+                    session.startedAt = new Date();
+                    
+                    session.process.stdout.on('data', (data) => {
+                        const text = data.toString();
+                        session.bytesReceived += data.length;
+                        
+                        if (session.onData) {
+                            session.onData(text);
+                        }
+                        
+                        if (session.onLine) {
+                            lineBuffer += text;
+                            
+                            if (lineBuffer.length > maxLineBuffer) {
+                                session.onLine(lineBuffer);
+                                session.linesProcessed++;
+                                lineBuffer = '';
+                            }
+                            
+                            const lines = lineBuffer.split('\n');
+                            lineBuffer = lines.pop() || '';
+                            
+                            for (const line of lines) {
+                                if (line.trim()) {
+                                    session.onLine(line);
+                                    session.linesProcessed++;
+                                }
+                            }
+                        }
+                    });
+                    
+                    session.process.stderr.on('data', (data) => {
+                        if (session.onError) {
+                            session.onError(data.toString());
+                        }
+                    });
+                    
+                    session.process.on('close', (code) => {
+                        session.isActive = false;
+                        
+                        if (session.onLine && lineBuffer.trim()) {
+                            session.onLine(lineBuffer);
+                            session.linesProcessed++;
+                        }
+                        
+                        if (session.onClose) {
+                            session.onClose(code);
+                        }
+                        
+                        this.streamSessions.delete(sessionId);
+                        this._log(`本地流式会话已关闭: ${sessionId}`);
+                    });
+                    
+                    session.process.on('error', (err) => {
+                        session.isActive = false;
+                        if (session.onError) {
+                            session.onError(err.message);
+                        }
+                        this.streamSessions.delete(sessionId);
+                    });
+                    
+                    this._log(`本地流式会话已启动: ${sessionId} - ${command}`);
+                },
+                
+                stop: () => {
+                    if (session.process && session.isActive) {
+                        session.process.kill('SIGINT');
+                        setTimeout(() => {
+                            if (session.isActive && session.process) {
+                                session.process.kill('SIGTERM');
+                            }
+                        }, 500);
+                    }
+                },
+                
+                destroy: () => {
+                    if (session.process) {
+                        session.process.kill('SIGKILL');
+                    }
+                    session.isActive = false;
+                    this.streamSessions.delete(sessionId);
+                },
+                
+                getStats: () => ({
+                    sessionId,
+                    hostId: 'local',
+                    command,
+                    isActive: session.isActive,
+                    startedAt: session.startedAt,
+                    duration: session.startedAt ? Date.now() - session.startedAt.getTime() : 0,
+                    linesProcessed: session.linesProcessed,
+                    bytesReceived: session.bytesReceived
+                })
+            };
+            
+            this.streamSessions.set(sessionId, session);
+            this._log(`本地流式会话已创建: ${sessionId}`);
+            resolve(session);
+        });
+    }
+    
+    /**
+     * 获取所有活跃的流式会话
+     */
+    getActiveStreamSessions() {
+        const sessions = [];
+        for (const [sessionId, session] of this.streamSessions) {
+            if (session.isActive) {
+                sessions.push(session.getStats());
+            }
+        }
+        return sessions;
+    }
+    
+    /**
+     * 停止所有流式会话
+     */
+    async stopAllStreamSessions() {
+        for (const [sessionId, session] of this.streamSessions) {
+            try {
+                session.stop();
+            } catch (e) {
+                this._log(`停止流式会话失败: ${sessionId} - ${e.message}`);
+            }
+        }
+        this._log(`已停止所有流式会话`);
+    }
+    
+    // ==================== 流式会话支持结束 ====================
+    
     /**
      * 测试主机连接
      */
@@ -546,6 +901,9 @@ class SSHManager {
      * 断开所有连接
      */
     async disconnectAll() {
+        // 先停止所有流式会话
+        await this.stopAllStreamSessions();
+        
         for (const [hostId, connection] of this.connectionPool) {
             if (connection.client) {
                 connection.client.end();
@@ -585,8 +943,16 @@ class SSHManager {
             maxPoolSize: this.connectionPoolSize,
             queueLength: this.connectionQueue.length,
             retryAttempts: this.retryAttempts,
-            retryDelay: this.retryDelay
+            retryDelay: this.retryDelay,
+            activeStreamSessions: this.streamSessions.size
         };
+    }
+    
+    /**
+     * 获取活跃连接数量
+     */
+    getActiveConnectionCount() {
+        return this.activeConnections;
     }
 }
 

@@ -1051,10 +1051,13 @@ class RAGDiaryPlugin {
 
             // 分析修饰符字符串
             if (modifiersAndParams) {
-                const parts = modifiersAndParams.split('::').map(p => p.trim()).filter(Boolean);
+                // 移除开头的所有冒号，然后按 :: 分割
+                const parts = modifiersAndParams.replace(/^:+/, '').split('::').map(p => p.trim()).filter(Boolean);
 
                 for (const part of parts) {
-                    if (part.toLowerCase().startsWith('auto')) {
+                    const lowerPart = part.toLowerCase();
+
+                    if (lowerPart.startsWith('auto')) {
                         isAutoMode = true;
                         const thresholdMatch = part.match(/:(\d+\.?\d*)/);
                         if (thresholdMatch) {
@@ -1065,9 +1068,9 @@ class RAGDiaryPlugin {
                         }
                         // 在自动模式下，链名称将由auto逻辑决定
                         chainName = 'default';
-                    } else if (part.toLowerCase() === 'group') {
+                    } else if (lowerPart === 'group') {
                         useGroup = true;
-                    } else {
+                    } else if (part) {
                         // 如果不是 Auto 模式，才接受指定的链名称
                         if (!isAutoMode) {
                             chainName = part;
