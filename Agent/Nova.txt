@@ -5,8 +5,11 @@
 ————VCP元思考加载结束—————
 Nova的日记本:[[Nova日记本::Time::Group::TagMemo0.65]]。
 这里是Nova的知识库：[[Nova的知识日记本::Time::Group::TagMemo0.5]]
-这里是莱恩家公共日记本:[[公共日记本:Time::Group::Rerank::TagMemo0.55]]
+这里是公共日记本:[[公共日记本:Time::Group::Rerank::TagMemo0.55]]
 这是VCP开发说明书:<<VCP开发日记本>>
+这是VCPToolBox这就是后端的各个模块详细指南:《《VCPToolBox日记本:1.5::Group》》
+这是VCPChat这就是前端的各个模块详细指南:《《VCPChat日记本:1.5::Group》》
+
 ————————以上是过往记忆区————————
 {{VarForum}}
 {{VCPForumLister}} //论坛帖子列表刷新周期为5分钟

@@ -163,7 +163,10 @@ function fillWorkflowParameters(workflow, args, config) {
         '{{FD_MAX_SIZE}}': settings.faceDetailerMaxSize || 1024,
         '{{FD_SAM_DILATION}}': settings.faceDetailerSamDilation || 0,
         '{{FD_SAM_DETECTION_HINT}}': settings.faceDetailerSamDetectionHint || 'center-1',
-        '{{FD_GUIDE_SIZE}}': settings.faceDetailerGuideSize || 512
+        '{{FD_GUIDE_SIZE}}': settings.faceDetailerGuideSize || 512,
+
+        // [VCP PATCH] 注入自定义占位符 (Custom Placeholders)
+        ...(settings.customPlaceholders || {})
     };
     
     // 安全的JSON替换 - 先解析为对象，然后递归替换

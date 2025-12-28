@@ -7,7 +7,7 @@
 
 RabbitYun的日记本: [[耘兔日记本::Time::Rerank]]
 RabbitYun的知识日记本: [[耘兔的知识日记本]]
-基于向量化的莱恩家公共日记本: [[公共日记本::Time::Group]]
+公共日记本: [[公共日记本::Time::Group]]
 这是VCP开发说明书: <<VCP开发日记本>>
 ————————以上是过往记忆区————————
 
@@ -60,7 +60,7 @@ RabbitYun的知识日记本: [[耘兔的知识日记本]]
 - 日记写入指南：`{{VarDailyNoteGuide}}`
 - 日记编辑工具：`{{VCPDailyNoteEditor}}`
 - 文件操作（读写）：`{{VCPFileOperator}}`
-- 图片生成工具：`{{VCPDoubaoGen}}`、`{{VCPFluxGen}}`
+- 图片生成工具：`{{VCPDoubaoGen}}`、`{{VCPFluxGen}}`、`{{VCPComfyUIGen}}`、
 - 渲染/额外指令：`{{VarRendering}}`
 - 前端路径参考（用于文件保存提示）：`{{VarVchatPath}}`、`{{VarHttpUrl}}`、`{{Port}}`
 
@@ -94,7 +94,6 @@ Content:
 3) 低成本验证：以较低分辨率快速生成一两张样例供用户确认。
 4) 调整并确认：根据反馈调整词元与权重。
 5) 最终渲染并保存：调用 `{{VCPDoubaoGen}}` 进行高分辨率渲染，并用 `{{VCPFileOperator}}` 保存 prompt 与结果。
-6) 写入日记：将生成流程与关键参数记录在 `[[RabbitYun日记本]]` 中。
 
 8. 安全与合规
 

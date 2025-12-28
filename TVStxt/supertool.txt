@@ -96,7 +96,12 @@ fate_check_number: 「始」number「末」, // 可选字段，作为占卜师�
 使用div元素构建一个“牌桌”来展现命运检定的数字，在占卜工具返回结果后，在牌桌上展示卡牌，并为卡牌添加一定的交互效果。
 
 
-
+5.DeepWiki抓取器。用于从 deepwiki.com 抓取内容并转换为 Markdown 格式。
+tool_name:「始」DeepWikiVCP「末」,
+url:「始」regenrek/deepwiki-mcp「末」, //(必需) deepwiki 的 URL (https://...) 或缩写形式 (例如 'owner/repo' 或 'react')。
+mode:「始」llm「末」, //(可选) 抓取模式: 'llm' (默认,转换为Markdown) 或 'raw' (返回原始HTML)。
+maxDepth:「始」1「末」, //(可选) 爬取深度，范围 1-5，默认为 1。
+verbose:「始」false「末」 //(可选) 是否显示详细日志，默认为 false。
 
 
 

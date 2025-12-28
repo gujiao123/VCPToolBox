@@ -34,16 +34,16 @@ async function processLocalImages(content, args = {}) {
     // Match Markdown image syntax: ![alt](file://...)
     const imageRegex = /!\[([^\]]*)\]\((file:\/\/[^)]+)\)/g;
     const matches = [...content.matchAll(imageRegex)];
-    
+
     if (matches.length === 0) {
         return content;
     }
 
     let processedContent = content;
-    
+
     // Check if we have a base64 version from retry (single image case)
     let imageBase64 = args.image_base64;
-    
+
     if (imageBase64) {
         // This is a retry with fetched file data
         // Extract pure base64 from Data URI if needed
@@ -51,31 +51,31 @@ async function processLocalImages(content, args = {}) {
         if (dataUriMatch) {
             imageBase64 = dataUriMatch[1];
         }
-        
+
         // Process only the first image (the one that was fetched)
         const match = matches[0];
         const altText = match[1];
         const fileUrl = match[2];
         const fullMatch = match[0];
-        
+
         // Save image to server
         const imageBuffer = Buffer.from(imageBase64, 'base64');
         const imageExtension = 'png'; // Default, could be improved by detecting actual type
         const generatedFileName = `${crypto.randomBytes(8).toString('hex')}.${imageExtension}`;
         const forumImageDir = path.join(PROJECT_BASE_PATH, 'image', 'forum');
         const localImageServerPath = path.join(forumImageDir, generatedFileName);
-        
+
         await fs.mkdir(forumImageDir, { recursive: true });
         await fs.writeFile(localImageServerPath, imageBuffer);
-        
+
         // Construct server URL
         const relativeServerPathForUrl = `forum/${generatedFileName}`;
         const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
-        
+
         // Replace in content
         const newImageMarkdown = `![${altText}](${accessibleImageUrl})`;
         processedContent = processedContent.replace(fullMatch, newImageMarkdown);
-        
+
         // If there are more images, process them recursively
         if (matches.length > 1) {
             // Remove the processed image from args to avoid reprocessing
@@ -83,48 +83,48 @@ async function processLocalImages(content, args = {}) {
             delete newArgs.image_base64;
             return await processLocalImages(processedContent, newArgs);
         }
-        
+
         return processedContent;
     }
-    
+
     // No base64 provided, try to read the first local file
     const match = matches[0];
     const altText = match[1];
     const fileUrl = match[2];
     const fullMatch = match[0];
-    
+
     try {
         // Convert file:// URL to local path - handle Windows paths
         let filePath = fileUrl.replace(/^file:\/\/\//, '').replace(/^file:\/\//, '');
         // Handle backslashes in Windows paths
         filePath = filePath.replace(/\//g, path.sep);
-        
+
         const buffer = await fs.readFile(filePath);
         imageBase64 = buffer.toString('base64');
-        
+
         // Save image to server
         const imageBuffer = Buffer.from(imageBase64, 'base64');
         const imageExtension = 'png';
         const generatedFileName = `${crypto.randomBytes(8).toString('hex')}.${imageExtension}`;
         const forumImageDir = path.join(PROJECT_BASE_PATH, 'image', 'forum');
         const localImageServerPath = path.join(forumImageDir, generatedFileName);
-        
+
         await fs.mkdir(forumImageDir, { recursive: true });
         await fs.writeFile(localImageServerPath, imageBuffer);
-        
+
         // Construct server URL
         const relativeServerPathForUrl = `forum/${generatedFileName}`;
         const accessibleImageUrl = `${VAR_HTTP_URL}:${SERVER_PORT}/pw=${IMAGESERVER_IMAGE_KEY}/images/${relativeServerPathForUrl}`;
-        
+
         // Replace in content
         const newImageMarkdown = `![${altText}](${accessibleImageUrl})`;
         processedContent = processedContent.replace(fullMatch, newImageMarkdown);
-        
+
         // If there are more images, process them recursively
         if (matches.length > 1) {
             return await processLocalImages(processedContent, args);
         }
-        
+
         return processedContent;
     } catch (e) {
         if (e.code === 'ENOENT') {
@@ -149,12 +149,12 @@ async function convertImagesToBase64ForAI(content) {
     // Match HTML img tags and Markdown images with http/https URLs
     const htmlImageRegex = /<img\s+[^>]*src=["']?(https?:\/\/[^"'\s>]+)["']?[^>]*>/gi;
     const markdownImageRegex = /!\[[^\]]*\]\((https?:\/\/[^)]+)\)/g;
-    
+
     const htmlMatches = [...content.matchAll(htmlImageRegex)];
     const markdownMatches = [...content.matchAll(markdownImageRegex)];
-    
+
     const imageUrls = [];
-    
+
     // Extract URLs from HTML img tags
     for (const match of htmlMatches) {
         const url = match[1];
@@ -163,7 +163,7 @@ async function convertImagesToBase64ForAI(content) {
             imageUrls.push(url);
         }
     }
-    
+
     // Extract URLs from Markdown images
     for (const match of markdownMatches) {
         const url = match[1];
@@ -171,7 +171,7 @@ async function convertImagesToBase64ForAI(content) {
             imageUrls.push(url);
         }
     }
-    
+
     // If no images, return simple text format
     if (imageUrls.length === 0) {
         return {
@@ -183,7 +183,7 @@ async function convertImagesToBase64ForAI(content) {
             ]
         };
     }
-    
+
     // Build structured content array
     const structuredContent = [
         {
@@ -191,7 +191,7 @@ async function convertImagesToBase64ForAI(content) {
             text: content
         }
     ];
-    
+
     // Download and convert images to base64
     for (const url of imageUrls) {
         try {
@@ -201,10 +201,10 @@ async function convertImagesToBase64ForAI(content) {
                 responseType: 'arraybuffer',
                 timeout: 10000
             });
-            
+
             const base64Image = Buffer.from(response.data).toString('base64');
             const contentType = response.headers['content-type'] || 'image/png';
-            
+
             structuredContent.push({
                 type: 'image_url',
                 image_url: {
@@ -216,7 +216,7 @@ async function convertImagesToBase64ForAI(content) {
             console.error(`[VCPForum] 无法下载图片 ${url}: ${e.message}`);
         }
     }
-    
+
     return {
         content: structuredContent
     };
@@ -243,7 +243,6 @@ async function createPost(args) {
     if (title && title.startsWith('[[') && title.endsWith(']')) {
         title = title.slice(1, -1);
     }
-    
     // Process local images (file:// URLs)
     content = await processLocalImages(content, args);
 
@@ -297,7 +296,7 @@ async function replyToPost(args) {
         throw new Error("回复帖子需要 'maid', 'post_uid', 和 'content' 参数。");
     }
     let content = rawContent.replace(/\\n/g, '\n').replace(/\\"/g, '"');
-    
+
     // Process local images (file:// URLs)
     content = await processLocalImages(content, args);
 
@@ -354,18 +353,18 @@ async function readPost(args) {
 
     const fullPath = path.join(FORUM_DIR, targetFile);
     const content = await fs.readFile(fullPath, 'utf-8');
-    
+
     // Convert images to base64 for AI
     const structuredContent = await convertImagesToBase64ForAI(content);
-    
+
     // If structured content has images, return it in multimodal format
     if (structuredContent.content.length > 1) {
-        return { 
-            success: true, 
+        return {
+            success: true,
             result: structuredContent
         };
     }
-    
+
     // Otherwise return simple text
     return { success: true, result: `帖子 (UID: ${post_uid}) 内容如下:\n\n${content}` };
 }
@@ -398,7 +397,7 @@ async function listAllPosts() {
             const author = fileMatch[3];
             const postTimestamp = fileMatch[4];
             const uid = fileMatch[5];
-            
+
             const formattedPostTime = new Date(postTimestamp).toLocaleString('zh-CN', { hour12: false });
 
             displayLine = `[${author}] ${title} (UID: ${uid}) (发布于: ${formattedPostTime})`;
